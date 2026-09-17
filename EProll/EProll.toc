@@ -1,0 +1,10 @@
+## Interface: 30300
+## Title: EProll
+## Notes: EProll
+## Author: Altruist
+## Version: 1.1.1
+## Dependencies: EPGP
+## SavedVariables: EProllDB
+
+EProll.lua
+Bindings.xml
