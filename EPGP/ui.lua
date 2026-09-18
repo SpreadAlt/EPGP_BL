@@ -1511,7 +1511,7 @@ local function CreateEPGPFrameStandings()
     local statusText = main:CreateFontString(nil, "ARTWORK", "GameFontNormal")
     statusText:SetHeight(fontHeight)
     statusText:SetJustifyH("CENTER")
-    statusText:SetPoint("CENTER", main, "TOP", 0, 20)
+    statusText:SetPoint("CENTER", main, "TOP", -67, 20)
 
     function statusText:TextUpdate()
         local name = UnitName("player")
