@@ -20,6 +20,7 @@ local state = {
     bids = {},
     bidOrder = 0,
     bidSequence = {},
+    excluded = {},
     loot = {},
     auctionWindowVisible = false,
     owner = nil,
@@ -185,10 +186,59 @@ local function GetSortedBids()
     return t
 end
 
+
+local function GetPlayerClassToken(name)
+    name = ShortName(name)
+    if not name then return nil end
+
+    if ShortName(UnitName("player")) == name then
+        local _, classToken = UnitClass("player")
+        return classToken
+    end
+
+    for i = 1, GetNumRaidMembers() do
+        local raidName, _, _, _, _, classToken = GetRaidRosterInfo(i)
+        if ShortName(raidName) == name then
+            return classToken
+        end
+    end
+
+    for i = 1, GetNumPartyMembers() do
+        local unit = "party" .. i
+        if ShortName(UnitName(unit)) == name then
+            local _, classToken = UnitClass(unit)
+            return classToken
+        end
+    end
+
+    return nil
+end
+
+local function SetClassColoredName(fontString, name)
+    fontString:SetText(name or "")
+    local classToken = GetPlayerClassToken(name)
+    local color = classToken and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classToken]
+    if color then
+        fontString:SetTextColor(color.r, color.g, color.b)
+    else
+        fontString:SetTextColor(1, 1, 1)
+    end
+end
+
+local function GetLeadingBid()
+    local sorted = GetSortedBids()
+    for i = 1, #sorted do
+        if not state.excluded[sorted[i].name] then
+            return sorted[i]
+        end
+    end
+    return nil
+end
+
 local function HighestOtherBid(name)
     local highest = nil
     for bidder, amount in pairs(state.bids) do
-        if bidder ~= name and (not highest or amount > highest) then
+        if bidder ~= name and not state.excluded[bidder] and (not highest or amount > highest) then
             highest = amount
         end
     end
@@ -244,13 +294,22 @@ local function RefreshAuctionFrame()
         local entry = sorted[i + offset]
         if entry then
             row.rank:SetText(tostring(i + offset) .. ".")
-            row.name:SetText(entry.name)
+            row.entryName = entry.name
+            SetClassColoredName(row.name, entry.name)
             row.bid:SetText(tostring(entry.amount))
+            if state.excluded[entry.name] then
+                row.selection:Show()
+            else
+                row.selection:Hide()
+            end
             row:Show()
         else
+            row.entryName = nil
             row.rank:SetText("")
             row.name:SetText("")
+            row.name:SetTextColor(1, 1, 1)
             row.bid:SetText("")
+            row.selection:Hide()
             row:Hide()
         end
     end
@@ -258,7 +317,12 @@ local function RefreshAuctionFrame()
     if total == 0 then
         auctionFrame.status:SetText("Ставок пока нет")
     else
-        auctionFrame.status:SetText(string.format("Лидер: %s - %d EP", sorted[1].name, sorted[1].amount))
+        local leader = GetLeadingBid()
+        if leader then
+            auctionFrame.status:SetText(string.format("Лидер: %s - %d EP", leader.name, leader.amount))
+        else
+            auctionFrame.status:SetText("Нет допущенных ставок")
+        end
     end
 end
 
@@ -269,6 +333,7 @@ local function EndAuctionLocal()
     state.owner = nil
     wipe(state.bids)
     wipe(state.bidSequence)
+    wipe(state.excluded)
     state.bidOrder = 0
     RefreshAuctionFrame()
 end
@@ -296,6 +361,7 @@ local function StartAuction(itemLink, texture)
     state.auctionWindowVisible = true
     wipe(state.bids)
     wipe(state.bidSequence)
+    wipe(state.excluded)
     state.bidOrder = 0
 
     SendAddonChat("Аукцион: " .. itemLink, "RAID_WARNING")
@@ -333,10 +399,13 @@ local function HandleBid(message, sender)
     end
 
     local oldBid = state.bids[sender]
-    local highestOther = HighestOtherBid(sender)
     local required = MIN_BID
-    if highestOther then
-        required = math.max(required, highestOther + MIN_STEP)
+
+    if not state.excluded[sender] then
+        local highestOther = HighestOtherBid(sender)
+        if highestOther then
+            required = math.max(required, highestOther + MIN_STEP)
+        end
     end
 
     if amount < required then
@@ -383,8 +452,16 @@ local function AnnounceWinner()
         return
     end
 
-    local winner = sorted[1].name
-    local amount = sorted[1].amount
+    local leading = GetLeadingBid()
+    if not leading then
+        SendAddonChat("Аукцион завершён без ставок: " .. state.itemLink, "RAID")
+        SendSync("E")
+        EndAuctionLocal()
+        return
+    end
+
+    local winner = leading.name
+    local amount = leading.amount
     local currentEP = GetEP(winner)
 
     if not currentEP or currentEP < amount then
@@ -442,10 +519,10 @@ end
 local function RaiseBidBy50()
     if not state.active then return end
 
-    local sorted = GetSortedBids()
+    local leading = GetLeadingBid()
     local amount = MIN_BID
-    if #sorted > 0 then
-        amount = sorted[1].amount + MIN_STEP
+    if leading then
+        amount = leading.amount + MIN_STEP
     end
 
     if IsDebugChat() then
@@ -467,6 +544,21 @@ local function AddBackgroundImage(parent, texturePath, alpha)
     bg:SetTexture(texturePath)
     bg:SetAlpha(alpha or 0.88)
     return bg
+end
+
+local function ToggleAuctionExclusion(name)
+    if not name or name == "" then return end
+    if not IsAuctionOwner() or not CanManageAuction() then return end
+
+    if state.excluded[name] then
+        state.excluded[name] = nil
+        SendSync("X\t" .. name .. "\t0")
+    else
+        state.excluded[name] = true
+        SendSync("X\t" .. name .. "\t1")
+    end
+
+    RefreshAuctionFrame()
 end
 
 local function CreateAuctionFrame()
@@ -550,6 +642,23 @@ local function CreateAuctionFrame()
         name:SetWidth(140)
         name:SetJustifyH("LEFT")
         row.name = name
+
+        local selection = row:CreateTexture(nil, "BACKGROUND")
+        selection:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+        selection:SetBlendMode("ADD")
+        selection:SetAlpha(0.55)
+        selection:SetPoint("TOPLEFT", name, "TOPLEFT", -2, 2)
+        selection:SetPoint("BOTTOMRIGHT", name, "BOTTOMRIGHT", 2, -2)
+        selection:Hide()
+        row.selection = selection
+
+        local nameButton = CreateFrame("Button", nil, row)
+        nameButton:SetPoint("TOPLEFT", name, "TOPLEFT", -2, 2)
+        nameButton:SetPoint("BOTTOMRIGHT", name, "BOTTOMRIGHT", 2, -2)
+        nameButton:SetScript("OnClick", function()
+            ToggleAuctionExclusion(row.entryName)
+        end)
+        row.nameButton = nameButton
 
         local bid = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         bid:SetPoint("RIGHT", row, "RIGHT", 0, 0)
@@ -842,6 +951,7 @@ local function HandleSyncMessage(message, sender)
         state.auctionWindowVisible = true
         wipe(state.bids)
         wipe(state.bidSequence)
+        wipe(state.excluded)
         state.bidOrder = 0
         RefreshAuctionFrame()
         return
@@ -871,6 +981,20 @@ local function HandleSyncMessage(message, sender)
         if bidder and bidder ~= "" then
             state.bids[bidder] = nil
             state.bidSequence[bidder] = nil
+            state.excluded[bidder] = nil
+            RefreshAuctionFrame()
+        end
+        return
+    end
+
+    if command == "X" then
+        local bidder, flag = string.match(rest, "^([^\t]+)\t([01])$")
+        if bidder and flag then
+            if flag == "1" then
+                state.excluded[bidder] = true
+            else
+                state.excluded[bidder] = nil
+            end
             RefreshAuctionFrame()
         end
         return
