@@ -1556,7 +1556,7 @@ local function CreateEPGPFrameStandings()
 
     -- Populate the table
     CreateTable(tabl,
-        { "Name", "EP", "Опоздания", "Спек" },
+        { "Name", "EP", "Мейн", "Офф" },
         { 0, 64, 64, 64 },
         { "LEFT", "RIGHT", "RIGHT", "RIGHT" },
         27) -- The scrollBarWidth
@@ -1644,15 +1644,14 @@ local function CreateEPGPFrameStandings()
             row.cells[1]:SetFontObject(GameFontHighlightSmall)
             local c = RAID_CLASS_COLORS[EPGP:GetClass(row.name)]
             row.cells[1]:SetTextColor(c.r, c.g, c.b)
-            local ep, gp, main, text = EPGP:GetEPGP(row.name)  -- Получаем текст из заметки
+            local ep, gp, main, text = EPGP:GetEPGP(row.name)
             row.cells[2]:SetText(ep)
-            row.cells[3]:SetText(gp)
-            -- Вместо приоритета отображаем текст из заметки
-            if text and text ~= "" then
-                row.cells[4]:SetText(text)
-            else
-                row.cells[4]:SetText("")  -- Пустая строка, если текста нет
-            end
+
+            local noteName = main or row.name
+            local officerNote = GS:GetNote(noteName) or ""
+            local _, mainSpec, offSpec = string.match(officerNote, "^([^,]*),([^,]*),([^,]*)")
+            row.cells[3]:SetText(mainSpec or "")
+            row.cells[4]:SetText(offSpec or "")
             row.check:Hide()
             if UnitInRaid("player") and EPGP:StandingsShowEveryone() then
                 if EPGP:IsMemberInAwardList(row.name) then

@@ -176,6 +176,8 @@ local global_config = {}
 local ep_data = {}
 local gp_data = {}
 local text_data = {}
+local main_spec_data = {}
+local off_spec_data = {}
 local main_data = {}
 local alt_data = {}
 local ignored = {}
@@ -218,48 +220,46 @@ end
 local function DecodeNote(note)
   if note then
     if note == "" then
-      return 0, 0, ""
+      return 0, "", ""
     else
-      -- Новый формат: "EP,GP,текст" или старый формат "EP,GP"
-      local ep, gp, text = string.match(note, "^(-?%d+),(-?%d+),([^,]*)$")
+      local ep, mainSpec, offSpec = string.match(note, "^(-?%d+),([^,]*),([^,]*)$")
       if not ep then
-        ep, gp = string.match(note, "^(-?%d+),(-?%d+)$")
-        text = ""
+        ep, mainSpec = string.match(note, "^(-?%d+),([^,]*)$")
+        offSpec = ""
       end
       if ep then
-        return tonumber(ep), tonumber(gp), text
+        return tonumber(ep), mainSpec or "", offSpec or ""
       end
     end
   end
 end
 
-local function EncodeNote(ep, gp, text)
-  text = text or ""
-  return string.format("%d,%d,%s",
+local function CleanNotePart(value)
+  value = tostring(value or "")
+  local cleaned = string.gsub(value, ",", "")
+  return cleaned
+end
+
+local function EncodeNote(ep, mainSpec, offSpec)
+  return string.format("%d,%s,%s",
                        math.max(ep, -5000),
-                       math.max(gp - global_config.base_gp, 0),
-                       text)
+                       CleanNotePart(mainSpec),
+                       CleanNotePart(offSpec))
 end
 
 local function AddEPGP(name, ep, gp, text)
   local total_ep = ep_data[name]
-  local total_gp = gp_data[name]
-  local note_text = text_data[name] or ""
-  assert(total_ep ~= nil and total_gp ~=nil,
+  assert(total_ep ~= nil,
          string.format("%s is not a main!", tostring(name)))
 
-  -- Compute the actual amounts we can add/subtract.
   if (total_ep + ep) < -5000 then
-    ep = -total_ep
-  end
-  if (total_gp + gp) < 0 then
-    gp = -total_gp
+    ep = -5000 - total_ep
   end
 
   GS:SetNote(name, EncodeNote(total_ep + ep,
-                              total_gp + gp + global_config.base_gp,
-                              note_text))
-  return ep, gp
+                              main_spec_data[name] or "",
+                              off_spec_data[name] or ""))
+  return ep, 0
 end
 
 -- A wrapper function to handle sort logic for selected
@@ -282,6 +282,14 @@ local function ComparatorWrapper(f)
          end
 end
 
+local function GetSpecValues(name)
+  local main = main_data[name]
+  if main then
+    name = main
+  end
+  return main_spec_data[name] or "", off_spec_data[name] or ""
+end
+
 local comparators = {
   NAME = function(a, b)
            return a < b
@@ -293,30 +301,21 @@ local comparators = {
          return a_ep > b_ep
        end,
   GP = function(a, b)
-         local a_ep, a_gp = EPGP:GetEPGP(a)
-         local b_ep, b_gp = EPGP:GetEPGP(b)
-
-         return a_gp > b_gp
+         local a_main = GetSpecValues(a)
+         local b_main = GetSpecValues(b)
+         if a_main == b_main then
+           return a < b
+         end
+         return a_main < b_main
        end,
-PR = function(a, b)
-       local a_ep, a_gp, a_main, a_text = EPGP:GetEPGP(a)
-       local b_ep, b_gp, b_main, b_text = EPGP:GetEPGP(b)
-
-       -- Если есть текст, используем его для сортировки
-       if a_text ~= "" or b_text ~= "" then
-         return a_text < b_text
-       end
-       
-       -- Иначе используем старую логику с приором
-       local a_qualifies = a_ep >= global_config.min_ep
-       local b_qualifies = b_ep >= global_config.min_ep
-
-       if a_qualifies == b_qualifies then
-         return a_ep/a_gp > b_ep/b_gp
-       else
-         return a_qualifies
-       end
-     end,
+  PR = function(a, b)
+         local _, a_off = GetSpecValues(a)
+         local _, b_off = GetSpecValues(b)
+         if a_off == b_off then
+           return a < b
+         end
+         return a_off < b_off
+       end,
 }
 for k,f in pairs(comparators) do
   comparators[k] = ComparatorWrapper(f)
@@ -459,6 +458,9 @@ local function DeleteState(name)
   -- Delete any existing cached values
   ep_data[name] = nil
   gp_data[name] = nil
+  text_data[name] = nil
+  main_spec_data[name] = nil
+  off_spec_data[name] = nil
 end
 
 local function HandleDeletedGuildNote(callback, name)
@@ -471,13 +473,15 @@ local function ParseGuildNote(callback, name, note)
   -- Delete current state about this toon.
   DeleteState(name)
 
-  local ep, gp, text = DecodeNote(note)
+  local ep, mainSpec, offSpec = DecodeNote(note)
   if ep then
     ep_data[name] = ep
-    gp_data[name] = gp
-    text_data[name] = text
+    gp_data[name] = 0
+    text_data[name] = offSpec
+    main_spec_data[name] = mainSpec
+    off_spec_data[name] = offSpec
   else
-    local main_ep, main_gp, main_text = DecodeNote(GS:GetNote(note))
+    local main_ep = DecodeNote(GS:GetNote(note))
     if not main_ep then
       -- This member does not point to a valid main, ignore it.
       ignored[name] = note
@@ -491,18 +495,19 @@ local function ParseGuildNote(callback, name, note)
       ep_data[name] = nil
       gp_data[name] = nil
       text_data[name] = nil
+      main_spec_data[name] = nil
+      off_spec_data[name] = nil
     end
   end
   DestroyStandings()
 end
 
 function EPGP:ExportRoster()
-  local base_gp = global_config.base_gp
   local t = {}
   for name,_ in pairs(ep_data) do
-    local ep, gp, main = self:GetEPGP(name)
-    if ep ~= -5000 or gp ~= base_gp then
-      table.insert(t, {name, ep, gp})
+    local ep = self:GetEPGP(name)
+    if ep ~= -5000 then
+      table.insert(t, {name, ep, 0})
     end
   end
   return t
@@ -518,13 +523,12 @@ function EPGP:ImportRoster(t, new_base_gp)
 
   local notes = {}
   for _, entry in pairs(t) do
-    local name, ep, gp = unpack(entry)
-    notes[name] = EncodeNote(ep, gp)
+    local name, ep = unpack(entry)
+    notes[name] = EncodeNote(ep, main_spec_data[name] or "", off_spec_data[name] or "")
   end
 
-  local zero_note = EncodeNote(0, 0)
   for name,_ in pairs(ep_data) do
-    local note = notes[name] or zero_note
+    local note = notes[name] or EncodeNote(0, main_spec_data[name] or "", off_spec_data[name] or "")
     GS:SetNote(name, note)
   end
 
@@ -647,16 +651,12 @@ function EPGP:IsAnyMemberInExtrasList()
 end
 
 function EPGP:ResetEPGP()
-  local zero_note = EncodeNote(0, 0)
   for name,_ in pairs(ep_data) do
-    GS:SetNote(name, zero_note)
-    local ep, gp, main = self:GetEPGP(name)
+    local ep, _, main = self:GetEPGP(name)
+    GS:SetNote(name, EncodeNote(0, main_spec_data[name] or "", off_spec_data[name] or ""))
     assert(main == nil, "Corrupt alt data!")
-    if ep > -5000 then
+    if ep ~= 0 then
       callbacks:Fire("EPAward", name, "Reset", -ep, true)
-    end
-    if gp > 0 then
-      callbacks:Fire("GPAward", name, "Reset", -gp, true)
     end
   end
   callbacks:Fire("EPGPReset")
@@ -739,8 +739,19 @@ function EPGP:GetEPGP(name)
     name = main
   end
   if ep_data[name] then
-    return ep_data[name], gp_data[name] + global_config.base_gp, main, text_data[name] or ""
+    return ep_data[name], 0, main, off_spec_data[name] or ""
   end
+end
+
+function EPGP:GetSpecs(name)
+  local main = main_data[name]
+  if main then
+    name = main
+  end
+  if ep_data[name] then
+    return main_spec_data[name] or "", off_spec_data[name] or ""
+  end
+  return "", ""
 end
 
 function EPGP:GetClass(name)
@@ -780,22 +791,10 @@ function EPGP:IncEPBy(name, reason, amount, mass, undo)
   end
   
   if reason == "ОТСУТСТВИЕ" then
-    local gp_change = 1 
-    local ep_change = amount
-    
-   
-    if gp == 0 then
-      ep_change = -500
-	elseif gp == 1 then
-	  ep_change = -700
-	elseif gp >= 2 then
-	  ep_change = -1000
-    end
-    
-    amount = AddEPGP(main or name, ep_change, gp_change)
+    local ep_change = -500
+    amount = AddEPGP(main or name, ep_change, 0)
     if amount then
       callbacks:Fire("EPAward", name, reason, ep_change, mass, undo)
-      callbacks:Fire("GPAward", name, reason, gp_change, mass, undo)
     end
   else
     

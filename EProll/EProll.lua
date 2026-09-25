@@ -4,12 +4,12 @@ BINDING_HEADER_EPROLL = "EProll"
 BINDING_NAME_EPROLL_AUCTION_MOUSEOVER = "Объявить предмет под курсором на аукцион"
 
 local ADDON = "EProll"
-local VERSION = "1.1.1"
+local VERSION = "1.1.3"
 local SYNC_PREFIX = "EProll"
 local MIN_BID = 100
 local MIN_STEP = 50
-local AUCTION_VISIBLE_ROWS = 6
-local AUCTION_ROW_HEIGHT = 19
+local AUCTION_VISIBLE_ROWS = 7
+local AUCTION_ROW_HEIGHT = 16
 local LOOT_VISIBLE_ROWS = 6
 local LOOT_ROW_HEIGHT = 36
 
@@ -20,7 +20,10 @@ local state = {
     bids = {},
     bidOrder = 0,
     bidSequence = {},
+    bidOff = {},
     excluded = {},
+    includeOff = false,
+    mainBid = true,
     loot = {},
     auctionWindowVisible = false,
     owner = nil,
@@ -105,27 +108,36 @@ local function IsPlayerRaidLeader()
     return false
 end
 
-local function IsPlayerMasterLooter()
+local function LootName(name)
+    if not name then return nil end
+    return string.match(name, "^[^-]+") or name
+end
+
+local function IsMasterLooterName(name)
+    name = LootName(name)
+    if not name then return false end
+
     local method, partyIndex, raidIndex = GetLootMethod()
     if method ~= "master" then return false end
 
-    local player = UnitName("player")
-    if not player then return false end
-
     if GetNumRaidMembers() > 0 and raidIndex then
-        local name = GetRaidRosterInfo(raidIndex)
-        return name == player
+        local masterName = GetRaidRosterInfo(raidIndex)
+        return LootName(masterName) == name
     end
 
     if GetNumPartyMembers() > 0 then
         if partyIndex == 0 then
-            return true
+            return LootName(UnitName("player")) == name
         elseif partyIndex and partyIndex > 0 then
-            return UnitName("party" .. partyIndex) == player
+            return LootName(UnitName("party" .. partyIndex)) == name
         end
     end
 
     return false
+end
+
+local function IsPlayerMasterLooter()
+    return IsMasterLooterName(UnitName("player"))
 end
 
 local function CanManageAuction()
@@ -170,10 +182,14 @@ local function GetSortedBids()
             name = name,
             amount = amount,
             sequence = state.bidSequence[name] or 0,
+            isOff = state.bidOff[name] and true or false,
         })
     end
 
     table.sort(t, function(a, b)
+        if not state.includeOff and a.isOff ~= b.isOff then
+            return not a.isOff
+        end
         if a.amount ~= b.amount then
             return a.amount > b.amount
         end
@@ -235,14 +251,78 @@ local function GetLeadingBid()
     return nil
 end
 
-local function HighestOtherBid(name)
+local function HighestOtherBid(name, isOff)
     local highest = nil
     for bidder, amount in pairs(state.bids) do
-        if bidder ~= name and not state.excluded[bidder] and (not highest or amount > highest) then
+        local samePriority = state.includeOff or ((state.bidOff[bidder] and true or false) == (isOff and true or false))
+        if bidder ~= name and not state.excluded[bidder] and samePriority and (not highest or amount > highest) then
             highest = amount
         end
     end
     return highest
+end
+
+local function ParseBidMessage(message)
+    if not message then return nil, nil end
+
+    local normalized = string.gsub(message, "О", "о")
+    normalized = string.gsub(normalized, "Ф", "ф")
+
+    local amount = tonumber(string.match(normalized, "^%s*(%d+)%s*$"))
+    if amount then
+        return math.floor(amount), false
+    end
+
+    amount = tonumber(string.match(normalized, "^%s*(%d+)%s*офф%s*$"))
+    if amount then
+        return math.floor(amount), true
+    end
+
+    return nil, nil
+end
+
+local function GetOfficerNote(name)
+    name = ShortName(name)
+    if not name then return nil end
+
+    local lookupName = name
+    if EPGP and type(EPGP.GetEPGP) == "function" then
+        local _, _, main = EPGP:GetEPGP(name)
+        if main and main ~= "" then
+            lookupName = ShortName(main) or main
+        end
+    end
+
+    local count = GetNumGuildMembers and GetNumGuildMembers(true) or 0
+    for i = 1, count do
+        local guildName, _, _, _, _, _, _, officerNote = GetGuildRosterInfo(i)
+        if ShortName(guildName) == lookupName then
+            return officerNote or ""
+        end
+    end
+
+    return nil
+end
+
+local function TrimText(text)
+    text = tostring(text or "")
+    text = string.gsub(text, "^%s+", "")
+    text = string.gsub(text, "%s+$", "")
+    return text
+end
+
+local function GetSpecText(name)
+    local note = GetOfficerNote(name)
+    if not note or note == "" then
+        return "-/-"
+    end
+
+    local _, mainSpec, offSpec = string.match(note, "^([^,]*),([^,]*),([^,]*)")
+    mainSpec = TrimText(mainSpec)
+    offSpec = TrimText(offSpec)
+    if mainSpec == "" then mainSpec = "-" end
+    if offSpec == "" then offSpec = "-" end
+    return mainSpec .. "/" .. offSpec
 end
 
 local function GetItemTexture(link)
@@ -284,6 +364,20 @@ local function RefreshAuctionFrame()
         end
     end
 
+    if auctionFrame.offCheckBox then
+        auctionFrame.offCheckBox:SetChecked(state.includeOff and true or false)
+        if IsAuctionOwner() then
+            auctionFrame.offCheckBox:Show()
+            auctionFrame.offCheckBox:Enable()
+        else
+            auctionFrame.offCheckBox:Hide()
+        end
+    end
+
+    if auctionFrame.mainCheckBox then
+        auctionFrame.mainCheckBox:SetChecked(state.mainBid and true or false)
+    end
+
     local sorted = GetSortedBids()
     local total = #sorted
     FauxScrollFrame_Update(auctionScroll, total, AUCTION_VISIBLE_ROWS, AUCTION_ROW_HEIGHT)
@@ -295,8 +389,17 @@ local function RefreshAuctionFrame()
         if entry then
             row.rank:SetText(tostring(i + offset) .. ".")
             row.entryName = entry.name
+            row.entryIsOff = entry.isOff
             SetClassColoredName(row.name, entry.name)
             row.bid:SetText(tostring(entry.amount))
+            if entry.isOff and not state.includeOff then
+                row.rank:SetTextColor(0.55, 0.55, 0.55)
+                row.name:SetTextColor(0.55, 0.55, 0.55)
+                row.bid:SetTextColor(0.55, 0.55, 0.55)
+            else
+                row.rank:SetTextColor(1, 1, 1)
+                row.bid:SetTextColor(1, 1, 1)
+            end
             if state.excluded[entry.name] then
                 row.selection:Show()
             else
@@ -305,10 +408,13 @@ local function RefreshAuctionFrame()
             row:Show()
         else
             row.entryName = nil
+            row.entryIsOff = nil
             row.rank:SetText("")
+            row.rank:SetTextColor(1, 1, 1)
             row.name:SetText("")
             row.name:SetTextColor(1, 1, 1)
             row.bid:SetText("")
+            row.bid:SetTextColor(1, 1, 1)
             row.selection:Hide()
             row:Hide()
         end
@@ -319,7 +425,16 @@ local function RefreshAuctionFrame()
     else
         local leader = GetLeadingBid()
         if leader then
-            auctionFrame.status:SetText(string.format("Лидер: %s - %d EP", leader.name, leader.amount))
+            local nameText = leader.name
+            local classToken = GetPlayerClassToken(leader.name)
+            local color = classToken and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classToken]
+            if color then
+                local r = math.floor((color.r or 1) * 255 + 0.5)
+                local g = math.floor((color.g or 1) * 255 + 0.5)
+                local b = math.floor((color.b or 1) * 255 + 0.5)
+                nameText = string.format("|cff%02x%02x%02x%s|r", r, g, b, leader.name)
+            end
+            auctionFrame.status:SetText(string.format("%s - %d EP", nameText, leader.amount))
         else
             auctionFrame.status:SetText("Нет допущенных ставок")
         end
@@ -333,7 +448,10 @@ local function EndAuctionLocal()
     state.owner = nil
     wipe(state.bids)
     wipe(state.bidSequence)
+    wipe(state.bidOff)
     wipe(state.excluded)
+    state.includeOff = false
+    state.mainBid = true
     state.bidOrder = 0
     RefreshAuctionFrame()
 end
@@ -361,7 +479,10 @@ local function StartAuction(itemLink, texture)
     state.auctionWindowVisible = true
     wipe(state.bids)
     wipe(state.bidSequence)
+    wipe(state.bidOff)
     wipe(state.excluded)
+    state.includeOff = false
+    state.mainBid = true
     state.bidOrder = 0
 
     SendAddonChat("Аукцион: " .. itemLink, "RAID_WARNING")
@@ -388,10 +509,8 @@ local function HandleBid(message, sender)
     if not CanManageAuction() then return end
     if not message or not sender then return end
 
-    local amount = tonumber(string.match(message, "^%s*(%d+)%s*$"))
+    local amount, isOff = ParseBidMessage(message)
     if not amount then return end
-
-    amount = math.floor(amount)
 
     if amount < MIN_BID then
         RejectMinStep(sender)
@@ -402,7 +521,7 @@ local function HandleBid(message, sender)
     local required = MIN_BID
 
     if not state.excluded[sender] then
-        local highestOther = HighestOtherBid(sender)
+        local highestOther = HighestOtherBid(sender, isOff)
         if highestOther then
             required = math.max(required, highestOther + MIN_STEP)
         end
@@ -414,10 +533,11 @@ local function HandleBid(message, sender)
     end
 
     if oldBid then
-        if amount == oldBid then
+        local oldIsOff = state.bidOff[sender] and true or false
+        if amount == oldBid and oldIsOff == isOff then
             return
         end
-        if math.abs(amount - oldBid) < MIN_STEP then
+        if amount ~= oldBid and math.abs(amount - oldBid) < MIN_STEP then
             RejectMinStep(sender)
             return
         end
@@ -430,9 +550,11 @@ local function HandleBid(message, sender)
     end
 
     state.bids[sender] = amount
+    state.bidOff[sender] = isOff and true or nil
     state.bidOrder = state.bidOrder + 1
     state.bidSequence[sender] = state.bidOrder
     SendSync(string.format("B\t%s\t%d\t%d", sender, amount, state.bidOrder))
+    SendSync("F\t" .. sender .. "\t" .. (isOff and "1" or "0"))
     RefreshAuctionFrame()
 end
 
@@ -468,6 +590,7 @@ local function AnnounceWinner()
         RejectInsufficientEP(winner)
         state.bids[winner] = nil
         state.bidSequence[winner] = nil
+        state.bidOff[winner] = nil
         SendSync("R\t" .. winner)
         RefreshAuctionFrame()
         return
@@ -525,13 +648,18 @@ local function RaiseBidBy50()
         amount = leading.amount + MIN_STEP
     end
 
+    local bidMessage = tostring(amount)
+    if not state.mainBid then
+        bidMessage = bidMessage .. " офф"
+    end
+
     if IsDebugChat() then
-        RawSendChat(tostring(amount), "SAY")
+        RawSendChat(bidMessage, "SAY")
         return
     end
 
     if GetNumRaidMembers() > 0 then
-        RawSendChat(tostring(amount), "RAID")
+        RawSendChat(bidMessage, "RAID")
     else
         Notify("Вне рейда включите Чат для отладки, чтобы сделать ставку.")
     end
@@ -539,8 +667,8 @@ end
 
 local function AddBackgroundImage(parent, texturePath, alpha)
     local bg = parent:CreateTexture(nil, "BACKGROUND")
-    bg:SetPoint("TOPLEFT", parent, "TOPLEFT", 12, -12)
-    bg:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", -12, 12)
+    bg:SetPoint("TOPLEFT", parent, "TOPLEFT", 9, -9)
+    bg:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", -9, 9)
     bg:SetTexture(texturePath)
     bg:SetAlpha(alpha or 0.88)
     return bg
@@ -561,10 +689,18 @@ local function ToggleAuctionExclusion(name)
     RefreshAuctionFrame()
 end
 
+local function SetIncludeOff(enabled)
+    if not IsAuctionOwner() then return end
+
+    state.includeOff = enabled and true or false
+    SendSync("O\t" .. (state.includeOff and "1" or "0"))
+    RefreshAuctionFrame()
+end
+
 local function CreateAuctionFrame()
     local f = CreateFrame("Frame", "EProllAuctionFrame", UIParent)
-    f:SetWidth(285)
-    f:SetHeight(260)
+    f:SetWidth(206)
+    f:SetHeight(228)
     f:SetPoint("CENTER", UIParent, "CENTER", 190, 10)
     f:SetFrameStrata("DIALOG")
     f:SetMovable(true)
@@ -581,13 +717,33 @@ local function CreateAuctionFrame()
     AddBackgroundImage(f, "Interface\\AddOns\\EProll\\Images\\Teldrassil.tga", 0.88)
 
     local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("TOPLEFT", f, "TOPLEFT", 16, -13)
+    title:SetPoint("TOPLEFT", f, "TOPLEFT", 16, -14)
     title:SetText("EProll")
 
-    local itemButton = CreateFrame("Button", nil, f)
-    itemButton:SetWidth(30)
-    itemButton:SetHeight(30)
-    itemButton:SetPoint("TOPLEFT", f, "TOPLEFT", 17, -34)
+    local itemPanel = CreateFrame("Frame", nil, f)
+    itemPanel:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -28)
+    itemPanel:SetWidth(178)
+    itemPanel:SetHeight(39)
+    itemPanel:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 8,
+        insets = { left = 2, right = 2, top = 2, bottom = 2 },
+    })
+    itemPanel:SetBackdropColor(0, 0, 0, 0.58)
+    itemPanel:SetBackdropBorderColor(0.58, 0.45, 0.22, 0.9)
+
+    local itemDivider = f:CreateTexture(nil, "BORDER")
+    itemDivider:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
+    itemDivider:SetVertexColor(0.72, 0.56, 0.18, 0.18)
+    itemDivider:SetHeight(1)
+    itemDivider:SetPoint("TOPLEFT", f, "TOPLEFT", 16, -70)
+    itemDivider:SetPoint("TOPRIGHT", f, "TOPRIGHT", -17, -70)
+
+    local itemButton = CreateFrame("Button", nil, itemPanel)
+    itemButton:SetWidth(28)
+    itemButton:SetHeight(28)
+    itemButton:SetPoint("LEFT", itemPanel, "LEFT", 6, 0)
     local icon = itemButton:CreateTexture(nil, "ARTWORK")
     icon:SetAllPoints(itemButton)
     itemButton.icon = icon
@@ -601,29 +757,84 @@ local function CreateAuctionFrame()
     itemButton:SetScript("OnLeave", function() GameTooltip:Hide() end)
     f.itemButton = itemButton
 
-    local itemText = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    itemText:SetPoint("LEFT", itemButton, "RIGHT", 7, 0)
-    itemText:SetWidth(210)
+    local itemText = itemPanel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    itemText:SetPoint("LEFT", itemButton, "RIGHT", 6, 0)
+    itemText:SetWidth(133)
     itemText:SetHeight(30)
     itemText:SetJustifyH("LEFT")
     f.itemText = itemText
 
-    local headerName = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    headerName:SetPoint("TOPLEFT", f, "TOPLEFT", 42, -72)
+    local playerColumnPanel = CreateFrame("Frame", nil, f)
+    playerColumnPanel:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -72)
+    playerColumnPanel:SetWidth(126)
+    playerColumnPanel:SetHeight(132)
+    playerColumnPanel:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 8,
+        insets = { left = 2, right = 2, top = 2, bottom = 2 },
+    })
+    playerColumnPanel:SetBackdropColor(0, 0, 0, 0.16)
+    playerColumnPanel:SetBackdropBorderColor(0.45, 0.34, 0.17, 0.48)
+
+    local playerHeaderBg = playerColumnPanel:CreateTexture(nil, "BACKGROUND")
+    playerHeaderBg:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
+    playerHeaderBg:SetVertexColor(0.24, 0.17, 0.05, 0.42)
+    playerHeaderBg:SetPoint("TOPLEFT", playerColumnPanel, "TOPLEFT", 3, -3)
+    playerHeaderBg:SetPoint("TOPRIGHT", playerColumnPanel, "TOPRIGHT", -3, -3)
+    playerHeaderBg:SetHeight(17)
+
+    local epColumnPanel = CreateFrame("Frame", nil, f)
+    epColumnPanel:SetPoint("TOPLEFT", f, "TOPLEFT", 140, -72)
+    epColumnPanel:SetWidth(52)
+    epColumnPanel:SetHeight(132)
+    epColumnPanel:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 8,
+        insets = { left = 2, right = 2, top = 2, bottom = 2 },
+    })
+    epColumnPanel:SetBackdropColor(0.03, 0.02, 0, 0.34)
+    epColumnPanel:SetBackdropBorderColor(0.72, 0.54, 0.18, 0.78)
+
+    local epHeaderBg = epColumnPanel:CreateTexture(nil, "BACKGROUND")
+    epHeaderBg:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
+    epHeaderBg:SetVertexColor(0.40, 0.27, 0.04, 0.55)
+    epHeaderBg:SetPoint("TOPLEFT", epColumnPanel, "TOPLEFT", 3, -3)
+    epHeaderBg:SetPoint("TOPRIGHT", epColumnPanel, "TOPRIGHT", -3, -3)
+    epHeaderBg:SetHeight(17)
+
+    local headerName = playerColumnPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    headerName:SetPoint("TOPLEFT", playerColumnPanel, "TOPLEFT", 26, -4)
+    headerName:SetTextColor(1, 0.82, 0)
+    headerName:SetShadowColor(0, 0, 0, 1)
+    headerName:SetShadowOffset(1, -1)
     headerName:SetText("Игрок")
 
-    local headerBid = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    headerBid:SetPoint("TOPRIGHT", f, "TOPRIGHT", -31, -72)
-    headerBid:SetText("EP")
+    local headerBid = epColumnPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    headerBid:SetPoint("TOP", epColumnPanel, "TOP", 0, -4)
+    headerBid:SetWidth(46)
+    headerBid:SetJustifyH("CENTER")
+    headerBid:SetTextColor(1, 0.82, 0)
+    headerBid:SetShadowColor(0, 0, 0, 1)
+    headerBid:SetShadowOffset(1, -1)
+    headerBid:SetText("ЕП")
 
     local listParent = CreateFrame("Frame", nil, f)
-    listParent:SetPoint("TOPLEFT", f, "TOPLEFT", 17, -90)
-    listParent:SetWidth(249)
+    listParent:SetPoint("TOPLEFT", f, "TOPLEFT", 16, -92)
+    listParent:SetWidth(176)
     listParent:SetHeight(AUCTION_VISIBLE_ROWS * AUCTION_ROW_HEIGHT)
+
+    local rankShade = listParent:CreateTexture(nil, "BACKGROUND")
+    rankShade:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
+    rankShade:SetVertexColor(0, 0, 0, 0.10)
+    rankShade:SetPoint("TOPLEFT", listParent, "TOPLEFT", 0, 0)
+    rankShade:SetWidth(24)
+    rankShade:SetHeight(AUCTION_VISIBLE_ROWS * AUCTION_ROW_HEIGHT)
 
     for i = 1, AUCTION_VISIBLE_ROWS do
         local row = CreateFrame("Frame", nil, listParent)
-        row:SetWidth(227)
+        row:SetWidth(158)
         row:SetHeight(AUCTION_ROW_HEIGHT)
         if i == 1 then
             row:SetPoint("TOPLEFT", listParent, "TOPLEFT", 0, 0)
@@ -633,13 +844,13 @@ local function CreateAuctionFrame()
 
         local rank = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         rank:SetPoint("LEFT", row, "LEFT", 0, 0)
-        rank:SetWidth(24)
+        rank:SetWidth(22)
         rank:SetJustifyH("RIGHT")
         row.rank = rank
 
         local name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        name:SetPoint("LEFT", rank, "RIGHT", 5, 0)
-        name:SetWidth(140)
+        name:SetPoint("LEFT", rank, "RIGHT", 4, 0)
+        name:SetWidth(97)
         name:SetJustifyH("LEFT")
         row.name = name
 
@@ -648,7 +859,7 @@ local function CreateAuctionFrame()
         selection:SetBlendMode("ADD")
         selection:SetAlpha(0.55)
         selection:SetPoint("TOPLEFT", name, "TOPLEFT", -2, 2)
-        selection:SetPoint("BOTTOMRIGHT", name, "BOTTOMRIGHT", 2, -2)
+        selection:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 2, -2)
         selection:Hide()
         row.selection = selection
 
@@ -658,11 +869,29 @@ local function CreateAuctionFrame()
         nameButton:SetScript("OnClick", function()
             ToggleAuctionExclusion(row.entryName)
         end)
+        nameButton:SetScript("OnEnter", function(self)
+            if not row.entryName then return end
+            local ep = GetEP(row.entryName) or 0
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            local classToken = GetPlayerClassToken(row.entryName)
+            local classColor = classToken and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classToken]
+            if classColor then
+                GameTooltip:AddLine(row.entryName, classColor.r, classColor.g, classColor.b)
+            else
+                GameTooltip:AddLine(row.entryName, 1, 1, 1)
+            end
+            GameTooltip:AddLine("ЕП: " .. tostring(ep), 1, 0.82, 0)
+            GameTooltip:AddLine("Спек: " .. GetSpecText(row.entryName), 0.35, 0.8, 1)
+            GameTooltip:Show()
+        end)
+        nameButton:SetScript("OnLeave", function()
+            GameTooltip:Hide()
+        end)
         row.nameButton = nameButton
 
         local bid = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         bid:SetPoint("RIGHT", row, "RIGHT", 0, 0)
-        bid:SetWidth(55)
+        bid:SetWidth(35)
         bid:SetJustifyH("RIGHT")
         row.bid = bid
 
@@ -677,24 +906,62 @@ local function CreateAuctionFrame()
     end)
 
     local status = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    status:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 17, 48)
-    status:SetWidth(251)
+    status:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 16, 12)
+    status:SetWidth(145)
     status:SetJustifyH("LEFT")
     f.status = status
 
-    local raise = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-    raise:SetWidth(112)
-    raise:SetHeight(22)
-    raise:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 16, 15)
-    raise:SetText("Повысить на 50")
+    local offCheck = CreateFrame("CheckButton", nil, f, "UICheckButtonTemplate")
+    offCheck:SetWidth(20)
+    offCheck:SetHeight(20)
+    offCheck:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -12, 7)
+    local offText = offCheck:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    offText:SetPoint("RIGHT", offCheck, "LEFT", 1, 0)
+    offText:SetText("Офф")
+    offCheck:SetScript("OnClick", function(self)
+        SetIncludeOff(self:GetChecked() and true or false)
+    end)
+    f.offCheckBox = offCheck
+
+    local controls = CreateFrame("Frame", nil, f)
+    controls:SetWidth(206)
+    controls:SetHeight(30)
+    controls:SetPoint("TOPLEFT", f, "BOTTOMLEFT", 0, 8)
+    controls:SetBackdrop({
+        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+        tile = true, tileSize = 32, edgeSize = 16,
+        insets = { left = 5, right = 5, top = 5, bottom = 5 },
+    })
+    controls:SetBackdropColor(0, 0, 0, 0.82)
+    controls:SetBackdropBorderColor(0.58, 0.45, 0.22, 0.9)
+
+    local mainCheck = CreateFrame("CheckButton", nil, controls, "UICheckButtonTemplate")
+    mainCheck:SetWidth(20)
+    mainCheck:SetHeight(20)
+    mainCheck:SetPoint("LEFT", controls, "LEFT", 8, 0)
+    local mainText = mainCheck:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    mainText:SetPoint("LEFT", mainCheck, "RIGHT", -1, 0)
+    mainText:SetText("Мейн")
+    mainCheck:SetChecked(true)
+    mainCheck:SetScript("OnClick", function(self)
+        state.mainBid = self:GetChecked() and true or false
+    end)
+    f.mainCheckBox = mainCheck
+
+    local raise = CreateFrame("Button", nil, controls, "UIPanelButtonTemplate")
+    raise:SetWidth(42)
+    raise:SetHeight(20)
+    raise:SetPoint("LEFT", controls, "LEFT", 68, 0)
+    raise:SetText("+50")
     raise:SetScript("OnClick", RaiseBidBy50)
     f.raiseButton = raise
 
-    local winner = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-    winner:SetWidth(137)
-    winner:SetHeight(22)
-    winner:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -16, 15)
-    winner:SetText("Объявить победителя")
+    local winner = CreateFrame("Button", nil, controls, "UIPanelButtonTemplate")
+    winner:SetWidth(82)
+    winner:SetHeight(20)
+    winner:SetPoint("LEFT", raise, "RIGHT", 4, 0)
+    winner:SetText("Победитель")
     winner:SetScript("OnClick", AnnounceWinner)
     f.winnerButton = winner
 
@@ -951,23 +1218,50 @@ local function HandleSyncMessage(message, sender)
         state.auctionWindowVisible = true
         wipe(state.bids)
         wipe(state.bidSequence)
+        wipe(state.bidOff)
         wipe(state.excluded)
+        state.includeOff = false
+        state.mainBid = true
         state.bidOrder = 0
         RefreshAuctionFrame()
         return
     end
 
-    if not state.active or ShortName(state.owner) ~= sender then
+    if not state.active then
+        return
+    end
+
+    if command == "O" then
+        if ShortName(state.owner) ~= sender then
+            return
+        end
+        if rest == "1" then
+            state.includeOff = true
+        elseif rest == "0" then
+            state.includeOff = false
+        else
+            return
+        end
+        RefreshAuctionFrame()
+        return
+    end
+
+    if ShortName(state.owner) ~= sender then
         return
     end
 
     if command == "B" then
-        local bidder, amount, sequence = string.match(rest, "^([^\t]+)\t(%d+)\t(%d+)$")
+        local bidder, amount, sequence, offFlag = string.match(rest, "^([^\t]+)\t(%d+)\t(%d+)\t([01])$")
+        if not bidder then
+            bidder, amount, sequence = string.match(rest, "^([^\t]+)\t(%d+)\t(%d+)$")
+            offFlag = "0"
+        end
         amount = tonumber(amount)
         sequence = tonumber(sequence)
         if not bidder or not amount or not sequence then return end
 
         state.bids[bidder] = amount
+        state.bidOff[bidder] = offFlag == "1" and true or nil
         state.bidSequence[bidder] = sequence
         if sequence > state.bidOrder then
             state.bidOrder = sequence
@@ -976,11 +1270,21 @@ local function HandleSyncMessage(message, sender)
         return
     end
 
+    if command == "F" then
+        local bidder, flag = string.match(rest, "^([^\t]+)\t([01])$")
+        if bidder and flag and state.bids[bidder] then
+            state.bidOff[bidder] = flag == "1" and true or nil
+            RefreshAuctionFrame()
+        end
+        return
+    end
+
     if command == "R" then
         local bidder = rest
         if bidder and bidder ~= "" then
             state.bids[bidder] = nil
             state.bidSequence[bidder] = nil
+            state.bidOff[bidder] = nil
             state.excluded[bidder] = nil
             RefreshAuctionFrame()
         end
@@ -1124,6 +1428,7 @@ frame:RegisterEvent("CHAT_MSG_RAID")
 frame:RegisterEvent("CHAT_MSG_RAID_LEADER")
 frame:RegisterEvent("CHAT_MSG_SAY")
 frame:RegisterEvent("CHAT_MSG_ADDON")
+frame:RegisterEvent("PARTY_LOOT_METHOD_CHANGED")
 
 frame:SetScript("OnEvent", function(self, event, ...)
     if event == "ADDON_LOADED" then
@@ -1142,6 +1447,9 @@ frame:SetScript("OnEvent", function(self, event, ...)
         if type(_G.RegisterAddonMessagePrefix) == "function" then
             _G.RegisterAddonMessagePrefix(SYNC_PREFIX)
         end
+        if type(_G.GuildRoster) == "function" then
+            _G.GuildRoster()
+        end
         if not EPGP then
             Notify("Не найден EPGP. Проверьте, что EPGP включён.")
         end
@@ -1150,6 +1458,11 @@ frame:SetScript("OnEvent", function(self, event, ...)
 
     if event == "LOOT_OPENED" then
         ScanLoot()
+        return
+    end
+
+    if event == "PARTY_LOOT_METHOD_CHANGED" then
+        RefreshAuctionFrame()
         return
     end
 
