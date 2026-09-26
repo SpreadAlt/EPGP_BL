@@ -1556,9 +1556,9 @@ local function CreateEPGPFrameStandings()
 
     -- Populate the table
     CreateTable(tabl,
-        { "Name", "EP", "Мейн", "Офф" },
-        { 0, 64, 64, 64 },
-        { "LEFT", "RIGHT", "RIGHT", "RIGHT" },
+        { "Ник", "ЕП" },
+        { 0, 64 },
+        { "LEFT", "RIGHT" },
         27) -- The scrollBarWidth
 
     -- Make the scrollbar
@@ -1622,10 +1622,6 @@ local function CreateEPGPFrameStandings()
         "OnClick", function(self) EPGP:StandingsSort("NAME") end)
     tabl.headers[2]:SetScript(
         "OnClick", function(self) EPGP:StandingsSort("EP") end)
-    tabl.headers[3]:SetScript(
-        "OnClick", function(self) EPGP:StandingsSort("GP") end)
-    tabl.headers[4]:SetScript(
-        "OnClick", function(self) EPGP:StandingsSort("PR") end)
 
     -- Install the update function on rowFrame.
     local function UpdateStandings()
@@ -1644,14 +1640,8 @@ local function CreateEPGPFrameStandings()
             row.cells[1]:SetFontObject(GameFontHighlightSmall)
             local c = RAID_CLASS_COLORS[EPGP:GetClass(row.name)]
             row.cells[1]:SetTextColor(c.r, c.g, c.b)
-            local ep, gp, main, text = EPGP:GetEPGP(row.name)
+            local ep = EPGP:GetEPGP(row.name)
             row.cells[2]:SetText(ep)
-
-            local noteName = main or row.name
-            local officerNote = GS:GetNote(noteName) or ""
-            local _, mainSpec, offSpec = string.match(officerNote, "^([^,]*),([^,]*),([^,]*)")
-            row.cells[3]:SetText(mainSpec or "")
-            row.cells[4]:SetText(offSpec or "")
             row.check:Hide()
             if UnitInRaid("player") and EPGP:StandingsShowEveryone() then
                 if EPGP:IsMemberInAwardList(row.name) then
