@@ -10,6 +10,18 @@ if ChatThrottleLib then
                     end
 end
 
+local function ChatSafeText(text)
+  text = tostring(text or "")
+  text = text:gsub("|c%x%x%x%x%x%x%x%x", "")
+  text = text:gsub("|r", "")
+  text = text:gsub("|H.-|h(.-)|h", "%1")
+  text = text:gsub("|T.-|t", "")
+  text = text:gsub("|A.-|a", "")
+  text = text:gsub("|n", " ")
+  text = text:gsub("|", "||")
+  return text
+end
+
 function mod:AnnounceTo(medium, fmt, ...)
   if not medium then return end
 
@@ -20,7 +32,7 @@ function mod:AnnounceTo(medium, fmt, ...)
     medium = "GUILD"
   end
 
-  local msg = string.format(fmt, ...)
+  local msg = ChatSafeText(string.format(fmt, ...))
   local str = "EPGP:"
   for _,s in pairs({strsplit(" ", msg)}) do
     if #str + #s >= 250 then

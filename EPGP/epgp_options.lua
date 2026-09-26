@@ -2,6 +2,37 @@ local L = LibStub("AceLocale-3.0"):GetLocale("EPGP")
 local GP = LibStub("LibGearPoints-1.0")
 local Debug = LibStub("LibDebug-1.0")
 
+local epCommandQueue = {}
+local epCommandQueueFrame = CreateFrame("Frame")
+local epCommandQueueElapsed = 0
+
+epCommandQueueFrame:SetScript("OnUpdate", function(self, elapsed)
+  if #epCommandQueue == 0 then return end
+  epCommandQueueElapsed = epCommandQueueElapsed + elapsed
+  if epCommandQueueElapsed < 0.1 then return end
+  epCommandQueueElapsed = 0
+
+  local entry = epCommandQueue[1]
+  if GetTime() - entry.time > 10 then
+    table.remove(epCommandQueue, 1)
+    return
+  end
+
+  if EPGP:CanIncEPBy(entry.reason, entry.amount) then
+    table.remove(epCommandQueue, 1)
+    EPGP:IncEPBy(entry.member, entry.reason, entry.amount)
+  end
+end)
+
+local function QueueEPCommand(member, reason, amount)
+  table.insert(epCommandQueue, {
+    member = member,
+    reason = reason,
+    amount = amount,
+    time = GetTime(),
+  })
+end
+
 function EPGP:SetupOptions()
   local options = {
     name = "EPGP",
@@ -106,6 +137,8 @@ function EPGP:ProcessCommand(str)
     amount = tonumber(amount)
     if self:CanIncEPBy(reason, amount) then
       self:IncEPBy(member, reason, amount)
+    elseif CanEditOfficerNote() and type(member) == "string" and member ~= "" and type(reason) == "string" and reason ~= "" and type(amount) == "number" and amount == math.floor(amount + 0.5) and amount >= -99999 and amount <= 99999 and amount ~= 0 then
+      QueueEPCommand(member, reason, amount)
     end
   elseif command == "gp" then
     local member, itemlink, amount = self:GetArgs(str, 3, nextpos)
