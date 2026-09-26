@@ -1311,6 +1311,12 @@ local function HandleSyncMessage(message, sender)
 end
 
 function EProll_AuctionMouseover()
+    if state.active then
+        state.auctionWindowVisible = true
+        RefreshAuctionFrame()
+        return
+    end
+
     local link = GetMouseoverItemLink()
     if not link then
         Notify("Наведите курсор на предмет в сумке и нажмите назначенную клавишу.")
