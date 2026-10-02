@@ -4,7 +4,7 @@ BINDING_HEADER_EPROLL = "EProll"
 BINDING_NAME_EPROLL_AUCTION_MOUSEOVER = "Объявить предмет под курсором на аукцион"
 
 local ADDON = "EProll"
-local VERSION = "1.1.3"
+local VERSION = "1.1.5"
 local SYNC_PREFIX = "EProll"
 local MIN_BID = 100
 local MIN_STEP = 50
@@ -338,6 +338,40 @@ local function SetItemButton(button, link, texture)
     end
 end
 
+local function UpdateManualDeductControls()
+    if not auctionFrame then return end
+
+    local visible = IsPlayerMasterLooter()
+
+    if auctionFrame.controls then
+        auctionFrame.controls:SetHeight(visible and 56 or 30)
+    end
+
+    if auctionFrame.manualEPBox then
+        if visible then
+            auctionFrame.manualEPBox:Show()
+        else
+            auctionFrame.manualEPBox:Hide()
+        end
+    end
+
+    if auctionFrame.manualEPButton then
+        if visible then
+            auctionFrame.manualEPButton:Show()
+        else
+            auctionFrame.manualEPButton:Hide()
+        end
+
+        local text = auctionFrame.manualEPBox and auctionFrame.manualEPBox:GetText() or ""
+        local amount = string.match(text, "^%d+$") and tonumber(text) or nil
+        if visible and amount and amount > 0 then
+            auctionFrame.manualEPButton:Enable()
+        else
+            auctionFrame.manualEPButton:Disable()
+        end
+    end
+end
+
 local function RefreshAuctionFrame()
     if not auctionFrame then return end
 
@@ -363,6 +397,8 @@ local function RefreshAuctionFrame()
             auctionFrame.winnerButton:Disable()
         end
     end
+
+    UpdateManualDeductControls()
 
     if auctionFrame.offCheckBox then
         auctionFrame.offCheckBox:SetChecked(state.includeOff and true or false)
@@ -453,6 +489,10 @@ local function EndAuctionLocal()
     state.includeOff = false
     state.mainBid = true
     state.bidOrder = 0
+    if auctionFrame and auctionFrame.manualEPBox then
+        auctionFrame.manualEPBox:SetText("")
+        auctionFrame.manualEPBox:ClearFocus()
+    end
     RefreshAuctionFrame()
 end
 
@@ -584,6 +624,90 @@ local function AnnounceWinner()
 
     local winner = leading.name
     local amount = leading.amount
+    local currentEP = GetEP(winner)
+
+    if not currentEP or currentEP < amount then
+        RejectInsufficientEP(winner)
+        state.bids[winner] = nil
+        state.bidSequence[winner] = nil
+        state.bidOff[winner] = nil
+        SendSync("R\t" .. winner)
+        RefreshAuctionFrame()
+        return
+    end
+
+    local reason = "EProll: " .. state.itemLink
+
+    if not EPGP or type(EPGP.CanIncEPBy) ~= "function" or type(EPGP.IncEPBy) ~= "function" then
+        Notify("EPGP недоступен: EP не списаны.")
+        return
+    end
+
+    if not EPGP:CanIncEPBy(reason, -amount) then
+        Notify("EPGP не разрешает изменение EP. Проверьте права на офицерскую заметку и синхронизацию гильдии.")
+        return
+    end
+
+    local announceModule = nil
+    local announceWasEnabled = false
+    if type(EPGP.GetModule) == "function" then
+        local moduleOK, module = pcall(EPGP.GetModule, EPGP, "announce", true)
+        if moduleOK and module and type(module.IsEnabled) == "function" and module:IsEnabled() then
+            announceModule = module
+            announceWasEnabled = true
+            module:Disable()
+        end
+    end
+
+    local ok, err = pcall(function()
+        EPGP:IncEPBy(winner, reason, -amount, false, false)
+    end)
+
+    if announceWasEnabled and announceModule then
+        announceModule:Enable()
+    end
+
+    if not ok then
+        Notify("Ошибка списания EP: " .. tostring(err))
+        return
+    end
+
+    local msg = string.format("EProll: %s отдан %s, за %d EP", state.itemLink, winner, amount)
+    SendAddonChat(msg, "GUILD")
+    SendSync("E")
+
+    EndAuctionLocal()
+end
+
+local function DeductManualEP()
+    if not state.active then return end
+    if not IsPlayerMasterLooter() then return end
+    if not auctionFrame or not auctionFrame.manualEPBox then return end
+
+    local text = auctionFrame.manualEPBox:GetText() or ""
+    local amount = string.match(text, "^%d+$") and tonumber(text) or nil
+    if not amount or amount <= 0 then
+        UpdateManualDeductControls()
+        return
+    end
+
+    local sorted = GetSortedBids()
+    if #sorted == 0 then
+        SendAddonChat("Аукцион завершён без ставок: " .. state.itemLink, "RAID")
+        SendSync("E")
+        EndAuctionLocal()
+        return
+    end
+
+    local leading = GetLeadingBid()
+    if not leading then
+        SendAddonChat("Аукцион завершён без ставок: " .. state.itemLink, "RAID")
+        SendSync("E")
+        EndAuctionLocal()
+        return
+    end
+
+    local winner = leading.name
     local currentEP = GetEP(winner)
 
     if not currentEP or currentEP < amount then
@@ -939,7 +1063,7 @@ local function CreateAuctionFrame()
     local mainCheck = CreateFrame("CheckButton", nil, controls, "UICheckButtonTemplate")
     mainCheck:SetWidth(20)
     mainCheck:SetHeight(20)
-    mainCheck:SetPoint("LEFT", controls, "LEFT", 8, 0)
+    mainCheck:SetPoint("TOPLEFT", controls, "TOPLEFT", 8, -5)
     local mainText = mainCheck:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     mainText:SetPoint("LEFT", mainCheck, "RIGHT", -1, 0)
     mainText:SetText("Мейн")
@@ -952,7 +1076,7 @@ local function CreateAuctionFrame()
     local raise = CreateFrame("Button", nil, controls, "UIPanelButtonTemplate")
     raise:SetWidth(42)
     raise:SetHeight(20)
-    raise:SetPoint("LEFT", controls, "LEFT", 68, 0)
+    raise:SetPoint("TOPLEFT", controls, "TOPLEFT", 68, -5)
     raise:SetText("+50")
     raise:SetScript("OnClick", RaiseBidBy50)
     f.raiseButton = raise
@@ -964,6 +1088,34 @@ local function CreateAuctionFrame()
     winner:SetText("Победитель")
     winner:SetScript("OnClick", AnnounceWinner)
     f.winnerButton = winner
+
+    local manualEPBox = CreateFrame("EditBox", nil, controls, "InputBoxTemplate")
+    manualEPBox:SetWidth(58)
+    manualEPBox:SetHeight(20)
+    manualEPBox:SetPoint("TOPLEFT", controls, "TOPLEFT", 68, -31)
+    manualEPBox:SetAutoFocus(false)
+    manualEPBox:SetNumeric(true)
+    manualEPBox:SetMaxLetters(7)
+    manualEPBox:SetJustifyH("CENTER")
+    manualEPBox:SetScript("OnEscapePressed", function(self)
+        self:ClearFocus()
+    end)
+    manualEPBox:SetScript("OnEnterPressed", function(self)
+        self:ClearFocus()
+    end)
+    manualEPBox:SetScript("OnTextChanged", function()
+        UpdateManualDeductControls()
+    end)
+    f.manualEPBox = manualEPBox
+
+    local manualEPButton = CreateFrame("Button", nil, controls, "UIPanelButtonTemplate")
+    manualEPButton:SetWidth(82)
+    manualEPButton:SetHeight(20)
+    manualEPButton:SetPoint("LEFT", manualEPBox, "RIGHT", 4, 0)
+    manualEPButton:SetText("Победитель")
+    manualEPButton:SetScript("OnClick", DeductManualEP)
+    f.manualEPButton = manualEPButton
+    f.controls = controls
 
     local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -3, -3)
