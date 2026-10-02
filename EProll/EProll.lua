@@ -1089,10 +1089,10 @@ local function CreateAuctionFrame()
     winner:SetScript("OnClick", AnnounceWinner)
     f.winnerButton = winner
 
-    local manualEPBox = CreateFrame("EditBox", nil, controls, "InputBoxTemplate")
-    manualEPBox:SetWidth(100)
+    local manualEPBox = CreateFrame("EditBox", "EProllManualEPBox", controls, "InputBoxTemplate")    manualEPBox:SetWidth(100)
     manualEPBox:SetHeight(20)
-    manualEPBox:SetPoint("TOPLEFT", controls, "TOPLEFT", 8, -31)
+    manualEPBox:SetPoint("TOPLEFT", controls, "TOPLEFT", 11, -31)
+
     manualEPBox:SetAutoFocus(false)
     manualEPBox:SetNumeric(true)
     manualEPBox:SetMaxLetters(7)
@@ -1111,7 +1111,7 @@ local function CreateAuctionFrame()
     local manualEPButton = CreateFrame("Button", nil, controls, "UIPanelButtonTemplate")
     manualEPButton:SetWidth(82)
     manualEPButton:SetHeight(20)
-    manualEPButton:SetPoint("LEFT", manualEPBox, "RIGHT", 4, 0)
+    manualEPButton:SetPoint("LEFT", manualEPBox, "RIGHT", 3, 0)
     manualEPButton:SetText("Победитель")
     manualEPButton:SetScript("OnClick", DeductManualEP)
     f.manualEPButton = manualEPButton
