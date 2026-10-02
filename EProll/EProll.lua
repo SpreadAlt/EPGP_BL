@@ -1090,9 +1090,9 @@ local function CreateAuctionFrame()
     f.winnerButton = winner
 
     local manualEPBox = CreateFrame("EditBox", nil, controls, "InputBoxTemplate")
-    manualEPBox:SetWidth(58)
+    manualEPBox:SetWidth(100)
     manualEPBox:SetHeight(20)
-    manualEPBox:SetPoint("TOPLEFT", controls, "TOPLEFT", 68, -31)
+    manualEPBox:SetPoint("TOPLEFT", controls, "TOPLEFT", 8, -31)
     manualEPBox:SetAutoFocus(false)
     manualEPBox:SetNumeric(true)
     manualEPBox:SetMaxLetters(7)
