@@ -273,7 +273,8 @@ local function ParseBidMessage(message)
         return math.floor(amount), false
     end
 
-    amount = tonumber(string.match(normalized, "^%s*(%d+)%s*офф?%s*$"))    if amount then
+    amount = tonumber(string.match(normalized, "^%s*(%d+)%s*офф?%s*$"))
+    if amount then
         return math.floor(amount), true
     end
 
