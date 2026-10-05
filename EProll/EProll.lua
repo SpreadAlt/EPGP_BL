@@ -4,7 +4,7 @@ BINDING_HEADER_EPROLL = "EProll"
 BINDING_NAME_EPROLL_AUCTION_MOUSEOVER = "Объявить предмет под курсором на аукцион"
 
 local ADDON = "EProll"
-local VERSION = "1.1.6b"
+local VERSION = "1.7"
 local SYNC_PREFIX = "EProll"
 local MIN_BID = 100
 local MIN_STEP = 50
