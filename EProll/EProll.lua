@@ -4,12 +4,14 @@ BINDING_HEADER_EPROLL = "EProll"
 BINDING_NAME_EPROLL_AUCTION_MOUSEOVER = "Объявить предмет под курсором на аукцион"
 
 local ADDON = "EProll"
-local VERSION = "1.1.5"
+local VERSION = "1.1.6"
 local SYNC_PREFIX = "EProll"
 local MIN_BID = 100
 local MIN_STEP = 50
 local AUCTION_VISIBLE_ROWS = 7
 local AUCTION_ROW_HEIGHT = 16
+local LOG_VISIBLE_ROWS = 7
+local LOG_ROW_HEIGHT = 18
 local LOOT_VISIBLE_ROWS = 6
 local LOOT_ROW_HEIGHT = 36
 
@@ -22,6 +24,9 @@ local state = {
     bidSequence = {},
     bidOff = {},
     excluded = {},
+    bidHistory = {},
+    bidHistorySeen = {},
+    excludedBids = {},
     includeOff = false,
     mainBid = true,
     loot = {},
@@ -35,9 +40,13 @@ local lootScroll
 local auctionFrame
 local auctionScroll
 local auctionRows = {}
+local logFrame
+local logScroll
+local logRows = {}
 local optionsPanel
 local debugCheckBox
 local allLootCheckBox
+local disableChatFilterCheckBox
 
 local function EnsureDB()
     if type(EProllDB) ~= "table" then
@@ -49,6 +58,9 @@ local function EnsureDB()
     if EProllDB.showAllLoot == nil then
         EProllDB.showAllLoot = false
     end
+    if EProllDB.disableChatFilter == nil then
+        EProllDB.disableChatFilter = false
+    end
 end
 
 local function IsDebugChat()
@@ -59,6 +71,11 @@ end
 local function ShowAllLoot()
     EnsureDB()
     return EProllDB.showAllLoot and true or false
+end
+
+local function IsChatFilterDisabled()
+    EnsureDB()
+    return EProllDB.disableChatFilter and true or false
 end
 
 local function LocalPrint(msg)
@@ -95,14 +112,14 @@ local function SendAddonChat(msg, channel)
     return false
 end
 
-local function IsPlayerRaidLeader()
+local function IsPlayerRaidLeaderOrAssistant()
     local player = UnitName("player")
     if not player or GetNumRaidMembers() == 0 then return false end
 
     for i = 1, GetNumRaidMembers() do
         local name, rank = GetRaidRosterInfo(i)
         if name == player then
-            return rank == 2
+            return rank == 1 or rank == 2
         end
     end
     return false
@@ -144,7 +161,7 @@ local function CanManageAuction()
     if GetNumRaidMembers() == 0 then
         return true
     end
-    return IsPlayerRaidLeader() or IsPlayerMasterLooter()
+    return IsPlayerRaidLeaderOrAssistant()
 end
 
 local function ShortName(name)
@@ -173,6 +190,16 @@ local function GetEP(name)
         return nil
     end
     return ep
+end
+
+local function IsBidExcluded(name, sequence)
+    if name and state.excluded[name] then
+        return true
+    end
+    if sequence and state.excludedBids[sequence] then
+        return true
+    end
+    return false
 end
 
 local function GetSortedBids()
@@ -244,7 +271,7 @@ end
 local function GetLeadingBid()
     local sorted = GetSortedBids()
     for i = 1, #sorted do
-        if not state.excluded[sorted[i].name] then
+        if not IsBidExcluded(sorted[i].name, sorted[i].sequence) then
             return sorted[i]
         end
     end
@@ -254,31 +281,91 @@ end
 local function HighestOtherBid(name, isOff)
     local highest = nil
     for bidder, amount in pairs(state.bids) do
+        local sequence = state.bidSequence[bidder]
         local samePriority = state.includeOff or ((state.bidOff[bidder] and true or false) == (isOff and true or false))
-        if bidder ~= name and not state.excluded[bidder] and samePriority and (not highest or amount > highest) then
+        if bidder ~= name and not IsBidExcluded(bidder, sequence) and samePriority and (not highest or amount > highest) then
             highest = amount
         end
     end
     return highest
 end
 
+local function HasOffMarker(message)
+    if not message then return false end
+    local normalized = tostring(message)
+    normalized = string.gsub(normalized, "О", "о")
+    normalized = string.gsub(normalized, "Ф", "ф")
+    normalized = string.lower(normalized)
+    normalized = string.gsub(normalized, "%d", " ")
+    normalized = string.gsub(normalized, "[%s%p]+", " ")
+
+    for token in string.gmatch(normalized, "%S+") do
+        if token == "оф" or token == "офф" or token == "of" or token == "off" then
+            return true
+        end
+    end
+    return false
+end
+
+local function StripOffMarkers(message)
+    local normalized = tostring(message or "")
+    normalized = string.gsub(normalized, "О", "о")
+    normalized = string.gsub(normalized, "Ф", "ф")
+    normalized = string.lower(normalized)
+    normalized = string.gsub(normalized, "офф", "")
+    normalized = string.gsub(normalized, "оф", "")
+    normalized = string.gsub(normalized, "off", "")
+    normalized = string.gsub(normalized, "of", "")
+    return normalized
+end
+
+local function DigitsToNumber(text)
+    if not text then return nil end
+    local digits = string.gsub(text, "%D", "")
+    if digits == "" then return nil end
+    local amount = tonumber(digits)
+    if not amount then return nil end
+    return math.floor(amount)
+end
+
 local function ParseBidMessage(message)
     if not message then return nil, nil end
 
-    local normalized = string.gsub(message, "О", "о")
-    normalized = string.gsub(normalized, "Ф", "ф")
+    local isOff = HasOffMarker(message)
 
-    local amount = tonumber(string.match(normalized, "^%s*(%d+)%s*$"))
-    if amount then
-        return math.floor(amount), false
+    if IsChatFilterDisabled() then
+        local numericPart = string.match(tostring(message), "(%d[%d%s%p]*)")
+        local amount = DigitsToNumber(numericPart)
+        if amount then
+            return amount, isOff
+        end
+        return nil, nil
     end
 
-    amount = tonumber(string.match(normalized, "^%s*(%d+)%s*офф?%s*$"))
+    local numericPart = StripOffMarkers(message)
+    if not string.find(numericPart, "%d") then
+        return nil, nil
+    end
+    if string.find(numericPart, "[^%d%s%p]") then
+        return nil, nil
+    end
+
+    local amount = DigitsToNumber(numericPart)
     if amount then
-        return math.floor(amount), true
+        return amount, isOff
     end
 
     return nil, nil
+end
+
+local function IsOwnAddonChatMessage(message)
+    local text = tostring(message or "")
+    if string.find(text, "Минимальный шаг", 1, true) then return true end
+    if string.find(text, "Недостаточно EP", 1, true) then return true end
+    if string.find(text, "Аукцион завершён", 1, true) then return true end
+    if string.find(text, "Аукцион:", 1, true) == 1 then return true end
+    if string.find(text, "EProll:", 1, true) == 1 then return true end
+    return false
 end
 
 local function GetOfficerNote(name)
@@ -341,10 +428,10 @@ end
 local function UpdateManualDeductControls()
     if not auctionFrame then return end
 
-    local visible = IsPlayerMasterLooter()
+    local visible = IsAuctionOwner() and CanManageAuction()
 
     if auctionFrame.controls then
-        auctionFrame.controls:SetHeight(visible and 56 or 30)
+        auctionFrame.controls:SetHeight(56)
     end
 
     if auctionFrame.manualEPBox then
@@ -436,7 +523,7 @@ local function RefreshAuctionFrame()
                 row.rank:SetTextColor(1, 1, 1)
                 row.bid:SetTextColor(1, 1, 1)
             end
-            if state.excluded[entry.name] then
+            if IsBidExcluded(entry.name, entry.sequence) then
                 row.selection:Show()
             else
                 row.selection:Hide()
@@ -486,12 +573,18 @@ local function EndAuctionLocal()
     wipe(state.bidSequence)
     wipe(state.bidOff)
     wipe(state.excluded)
+    wipe(state.bidHistory)
+    wipe(state.bidHistorySeen)
+    wipe(state.excludedBids)
     state.includeOff = false
     state.mainBid = true
     state.bidOrder = 0
     if auctionFrame and auctionFrame.manualEPBox then
         auctionFrame.manualEPBox:SetText("")
         auctionFrame.manualEPBox:ClearFocus()
+    end
+    if logFrame then
+        logFrame:Hide()
     end
     RefreshAuctionFrame()
 end
@@ -503,7 +596,7 @@ local function StartAuction(itemLink, texture)
     end
 
     if not CanManageAuction() then
-        Notify("Начать аукцион может только лидер рейда или мастер добычи.")
+        Notify("Начать аукцион может только лидер рейда или помощник.")
         return
     end
 
@@ -521,9 +614,16 @@ local function StartAuction(itemLink, texture)
     wipe(state.bidSequence)
     wipe(state.bidOff)
     wipe(state.excluded)
+    wipe(state.bidHistory)
+    wipe(state.bidHistorySeen)
+    wipe(state.excludedBids)
     state.includeOff = false
     state.mainBid = true
     state.bidOrder = 0
+
+    if logFrame then
+        logFrame:Hide()
+    end
 
     SendAddonChat("Аукцион: " .. itemLink, "RAID_WARNING")
     SendSync("S\t" .. itemLink)
@@ -543,11 +643,26 @@ local function RejectInsufficientEP(name)
     end
 end
 
+local function AddBidHistoryEntry(name, amount, isOff, sequence)
+    if not sequence or state.bidHistorySeen[sequence] then return end
+    state.bidHistorySeen[sequence] = true
+    table.insert(state.bidHistory, {
+        name = name,
+        amount = amount,
+        isOff = isOff and true or false,
+        sequence = sequence,
+    })
+    table.sort(state.bidHistory, function(a, b)
+        return (a.sequence or 0) < (b.sequence or 0)
+    end)
+end
+
 local function HandleBid(message, sender)
     if not state.active then return end
     if not IsAuctionOwner() then return end
     if not CanManageAuction() then return end
     if not message or not sender then return end
+    if IsOwnAddonChatMessage(message) then return end
 
     local amount, isOff = ParseBidMessage(message)
     if not amount then return end
@@ -558,13 +673,27 @@ local function HandleBid(message, sender)
     end
 
     local oldBid = state.bids[sender]
-    local required = MIN_BID
+    local oldSequence = state.bidSequence[sender]
+    local oldIsOff = state.bidOff[sender] and true or false
+    local highestOther = nil
 
     if not state.excluded[sender] then
-        local highestOther = HighestOtherBid(sender, isOff)
+        highestOther = HighestOtherBid(sender, isOff)
+    end
+
+    if oldBid and oldIsOff == isOff and not IsBidExcluded(sender, oldSequence) then
+        local oldRequired = MIN_BID
         if highestOther then
-            required = math.max(required, highestOther + MIN_STEP)
+            oldRequired = math.max(oldRequired, highestOther + MIN_STEP)
         end
+        if oldBid >= oldRequired then
+            return
+        end
+    end
+
+    local required = MIN_BID
+    if not state.excluded[sender] and highestOther then
+        required = math.max(required, highestOther + MIN_STEP)
     end
 
     if amount < required then
@@ -572,12 +701,11 @@ local function HandleBid(message, sender)
         return
     end
 
-    if oldBid then
-        local oldIsOff = state.bidOff[sender] and true or false
-        if amount == oldBid and oldIsOff == isOff then
+    if oldBid and oldIsOff == isOff then
+        if amount == oldBid then
             return
         end
-        if amount ~= oldBid and math.abs(amount - oldBid) < MIN_STEP then
+        if math.abs(amount - oldBid) < MIN_STEP then
             RejectMinStep(sender)
             return
         end
@@ -589,13 +717,16 @@ local function HandleBid(message, sender)
         return
     end
 
+    state.bidOrder = state.bidOrder + 1
     state.bids[sender] = amount
     state.bidOff[sender] = isOff and true or nil
-    state.bidOrder = state.bidOrder + 1
     state.bidSequence[sender] = state.bidOrder
-    SendSync(string.format("B\t%s\t%d\t%d", sender, amount, state.bidOrder))
-    SendSync("F\t" .. sender .. "\t" .. (isOff and "1" or "0"))
+    AddBidHistoryEntry(sender, amount, isOff, state.bidOrder)
+    SendSync(string.format("B\t%s\t%d\t%d\t%d", sender, amount, state.bidOrder, isOff and 1 or 0))
     RefreshAuctionFrame()
+    if logFrame and logFrame:IsShown() and logFrame.Refresh then
+        logFrame:Refresh()
+    end
 end
 
 local function AnnounceWinner()
@@ -681,7 +812,7 @@ end
 
 local function DeductManualEP()
     if not state.active then return end
-    if not IsPlayerMasterLooter() then return end
+    if not IsAuctionOwner() or not CanManageAuction() then return end
     if not auctionFrame or not auctionFrame.manualEPBox then return end
 
     local text = auctionFrame.manualEPBox:GetText() or ""
@@ -767,6 +898,10 @@ local function RaiseBidBy50()
     if not state.active then return end
 
     local leading = GetLeadingBid()
+    if leading and ShortName(leading.name) == ShortName(UnitName("player")) then
+        return
+    end
+
     local amount = MIN_BID
     if leading then
         amount = leading.amount + MIN_STEP
@@ -811,6 +946,182 @@ local function ToggleAuctionExclusion(name)
     end
 
     RefreshAuctionFrame()
+    if logFrame and logFrame:IsShown() and logFrame.Refresh then
+        logFrame:Refresh()
+    end
+end
+
+local function ToggleBidExclusion(sequence)
+    if not sequence then return end
+    if not IsAuctionOwner() or not CanManageAuction() then return end
+
+    if state.excludedBids[sequence] then
+        state.excludedBids[sequence] = nil
+        SendSync("H\t" .. tostring(sequence) .. "\t0")
+    else
+        state.excludedBids[sequence] = true
+        SendSync("H\t" .. tostring(sequence) .. "\t1")
+    end
+
+    RefreshAuctionFrame()
+    if logFrame and logFrame:IsShown() and logFrame.Refresh then
+        logFrame:Refresh()
+    end
+end
+
+local function RefreshLogFrame()
+    if not logFrame or not logFrame:IsShown() then return end
+
+    local total = #state.bidHistory
+    FauxScrollFrame_Update(logScroll, total, LOG_VISIBLE_ROWS, LOG_ROW_HEIGHT)
+    local offset = FauxScrollFrame_GetOffset(logScroll)
+
+    for i = 1, LOG_VISIBLE_ROWS do
+        local row = logRows[i]
+        local entry = state.bidHistory[i + offset]
+        if entry then
+            row.entrySequence = entry.sequence
+            row.number:SetText(tostring(i + offset) .. ".")
+            SetClassColoredName(row.name, entry.name)
+            row.amount:SetText(tostring(entry.amount) .. (entry.isOff and " офф" or ""))
+            if state.excluded[entry.name] or state.excludedBids[entry.sequence] then
+                row.selection:Show()
+                row.number:SetTextColor(0.55, 0.55, 0.55)
+                row.name:SetTextColor(0.55, 0.55, 0.55)
+                row.amount:SetTextColor(0.55, 0.55, 0.55)
+            else
+                row.selection:Hide()
+                row.number:SetTextColor(1, 1, 1)
+                SetClassColoredName(row.name, entry.name)
+                row.amount:SetTextColor(1, 1, 1)
+            end
+            row:Show()
+        else
+            row.entrySequence = nil
+            row.number:SetText("")
+            row.name:SetText("")
+            row.amount:SetText("")
+            row.selection:Hide()
+            row:Hide()
+        end
+    end
+
+    if total == 0 then
+        logFrame.status:SetText("Ставок пока нет")
+    else
+        logFrame.status:SetText("Всего ставок: " .. tostring(total))
+    end
+end
+
+local function ToggleLogFrame()
+    if not logFrame then return end
+    if logFrame:IsShown() then
+        logFrame:Hide()
+    else
+        logFrame:Show()
+        RefreshLogFrame()
+    end
+end
+
+local function CreateLogFrame()
+    local f = CreateFrame("Frame", "EProllBidLogFrame", UIParent)
+    f:SetWidth(235)
+    f:SetHeight(205)
+    f:SetPoint("LEFT", EProllAuctionFrame, "RIGHT", 8, -20)
+    f:SetFrameStrata("DIALOG")
+    f:SetMovable(true)
+    f:EnableMouse(true)
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", function(self) self:StartMoving() end)
+    f:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+    f:SetBackdrop({
+        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+        tile = true, tileSize = 32, edgeSize = 24,
+        insets = { left = 8, right = 8, top = 8, bottom = 8 },
+    })
+    f:SetBackdropColor(0, 0, 0, 0.9)
+
+    local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -13)
+    title:SetText("Лог ставок")
+
+    local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+    close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -3, -3)
+
+    local headerName = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    headerName:SetPoint("TOPLEFT", f, "TOPLEFT", 38, -36)
+    headerName:SetText("Игрок")
+
+    local headerAmount = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    headerAmount:SetPoint("TOPRIGHT", f, "TOPRIGHT", -26, -36)
+    headerAmount:SetText("ЕП")
+
+    local listParent = CreateFrame("Frame", nil, f)
+    listParent:SetPoint("TOPLEFT", f, "TOPLEFT", 12, -52)
+    listParent:SetWidth(205)
+    listParent:SetHeight(LOG_VISIBLE_ROWS * LOG_ROW_HEIGHT)
+
+    for i = 1, LOG_VISIBLE_ROWS do
+        local row = CreateFrame("Button", nil, listParent)
+        row:SetWidth(187)
+        row:SetHeight(LOG_ROW_HEIGHT)
+        if i == 1 then
+            row:SetPoint("TOPLEFT", listParent, "TOPLEFT", 0, 0)
+        else
+            row:SetPoint("TOPLEFT", logRows[i - 1], "BOTTOMLEFT", 0, 0)
+        end
+
+        local selection = row:CreateTexture(nil, "BACKGROUND")
+        selection:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+        selection:SetBlendMode("ADD")
+        selection:SetAlpha(0.55)
+        selection:SetAllPoints(row)
+        selection:Hide()
+        row.selection = selection
+
+        local number = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        number:SetPoint("LEFT", row, "LEFT", 0, 0)
+        number:SetWidth(22)
+        number:SetJustifyH("RIGHT")
+        row.number = number
+
+        local name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        name:SetPoint("LEFT", number, "RIGHT", 4, 0)
+        name:SetWidth(88)
+        name:SetJustifyH("LEFT")
+        row.name = name
+
+        local amount = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        amount:SetPoint("RIGHT", row, "RIGHT", 0, 0)
+        amount:SetWidth(67)
+        amount:SetJustifyH("RIGHT")
+        row.amount = amount
+
+        row:SetScript("OnClick", function(self)
+            ToggleBidExclusion(self.entrySequence)
+        end)
+
+        row:Hide()
+        logRows[i] = row
+    end
+
+    logScroll = CreateFrame("ScrollFrame", "EProllBidLogScroll", listParent, "FauxScrollFrameTemplate")
+    logScroll:SetPoint("TOPLEFT", listParent, "TOPLEFT", 0, 0)
+    logScroll:SetPoint("BOTTOMRIGHT", listParent, "BOTTOMRIGHT", -18, 0)
+    logScroll:SetScript("OnVerticalScroll", function(self, offset)
+        FauxScrollFrame_OnVerticalScroll(self, offset, LOG_ROW_HEIGHT, RefreshLogFrame)
+    end)
+
+    local status = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    status:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 14, 12)
+    status:SetWidth(180)
+    status:SetJustifyH("LEFT")
+    f.status = status
+    f.Refresh = RefreshLogFrame
+
+    logFrame = f
+    f:Hide()
 end
 
 local function SetIncludeOff(enabled)
@@ -1049,7 +1360,7 @@ local function CreateAuctionFrame()
 
     local controls = CreateFrame("Frame", nil, f)
     controls:SetWidth(206)
-    controls:SetHeight(30)
+    controls:SetHeight(56)
     controls:SetPoint("TOPLEFT", f, "BOTTOMLEFT", 0, 8)
     controls:SetBackdrop({
         bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
@@ -1089,15 +1400,42 @@ local function CreateAuctionFrame()
     winner:SetScript("OnClick", AnnounceWinner)
     f.winnerButton = winner
 
-    local manualEPBox = CreateFrame("EditBox", "EProllManualEPBox", controls, "InputBoxTemplate")
-    manualEPBox:SetWidth(100)
-    manualEPBox:SetHeight(20)
-    manualEPBox:SetPoint("TOPLEFT", controls, "TOPLEFT", 11, -31)
+    local logButton = CreateFrame("Button", nil, controls, "UIPanelButtonTemplate")
+    logButton:SetWidth(40)
+    logButton:SetHeight(20)
+    logButton:SetPoint("TOPLEFT", controls, "TOPLEFT", 8, -31)
+    logButton:SetText("Лог")
+    logButton:SetScript("OnClick", ToggleLogFrame)
+    f.logButton = logButton
 
+    local manualEPBox = CreateFrame("EditBox", "EProllManualEPBox", controls, "InputBoxTemplate")
+    manualEPBox:SetWidth(54)
+    manualEPBox:SetHeight(20)
+    manualEPBox:SetPoint("LEFT", logButton, "RIGHT", 6, 0)
     manualEPBox:SetAutoFocus(false)
     manualEPBox:SetNumeric(true)
     manualEPBox:SetMaxLetters(7)
     manualEPBox:SetJustifyH("CENTER")
+    manualEPBox:SetTextInsets(6, 6, 0, 0)
+    local manualLeft = _G[manualEPBox:GetName() .. "Left"]
+    local manualMiddle = _G[manualEPBox:GetName() .. "Middle"]
+    local manualRight = _G[manualEPBox:GetName() .. "Right"]
+    if manualLeft and manualMiddle and manualRight then
+        manualLeft:ClearAllPoints()
+        manualLeft:SetPoint("LEFT", manualEPBox, "LEFT", 0, 0)
+        manualLeft:SetWidth(8)
+        manualLeft:SetHeight(20)
+
+        manualRight:ClearAllPoints()
+        manualRight:SetPoint("RIGHT", manualEPBox, "RIGHT", 0, 0)
+        manualRight:SetWidth(8)
+        manualRight:SetHeight(20)
+
+        manualMiddle:ClearAllPoints()
+        manualMiddle:SetPoint("LEFT", manualLeft, "RIGHT", 0, 0)
+        manualMiddle:SetPoint("RIGHT", manualRight, "LEFT", 0, 0)
+        manualMiddle:SetHeight(20)
+    end
     manualEPBox:SetScript("OnEscapePressed", function(self)
         self:ClearFocus()
     end)
@@ -1110,9 +1448,9 @@ local function CreateAuctionFrame()
     f.manualEPBox = manualEPBox
 
     local manualEPButton = CreateFrame("Button", nil, controls, "UIPanelButtonTemplate")
-    manualEPButton:SetWidth(82)
+    manualEPButton:SetWidth(80)
     manualEPButton:SetHeight(20)
-    manualEPButton:SetPoint("LEFT", manualEPBox, "RIGHT", 3, 0)
+    manualEPButton:SetPoint("LEFT", manualEPBox, "RIGHT", 4, 0)
     manualEPButton:SetText("Победитель")
     manualEPButton:SetScript("OnClick", DeductManualEP)
     f.manualEPButton = manualEPButton
@@ -1123,6 +1461,7 @@ local function CreateAuctionFrame()
     close:SetScript("OnClick", function()
         state.auctionWindowVisible = false
         f:Hide()
+        if logFrame then logFrame:Hide() end
     end)
 
     auctionFrame = f
@@ -1373,9 +1712,13 @@ local function HandleSyncMessage(message, sender)
         wipe(state.bidSequence)
         wipe(state.bidOff)
         wipe(state.excluded)
+        wipe(state.bidHistory)
+        wipe(state.bidHistorySeen)
+        wipe(state.excludedBids)
         state.includeOff = false
         state.mainBid = true
         state.bidOrder = 0
+        if logFrame then logFrame:Hide() end
         RefreshAuctionFrame()
         return
     end
@@ -1419,7 +1762,9 @@ local function HandleSyncMessage(message, sender)
         if sequence > state.bidOrder then
             state.bidOrder = sequence
         end
+        AddBidHistoryEntry(bidder, amount, offFlag == "1", sequence)
         RefreshAuctionFrame()
+        if logFrame and logFrame:IsShown() then RefreshLogFrame() end
         return
     end
 
@@ -1427,7 +1772,17 @@ local function HandleSyncMessage(message, sender)
         local bidder, flag = string.match(rest, "^([^\t]+)\t([01])$")
         if bidder and flag and state.bids[bidder] then
             state.bidOff[bidder] = flag == "1" and true or nil
+            local sequence = state.bidSequence[bidder]
+            if sequence then
+                for i = 1, #state.bidHistory do
+                    if state.bidHistory[i].sequence == sequence then
+                        state.bidHistory[i].isOff = flag == "1" and true or false
+                        break
+                    end
+                end
+            end
             RefreshAuctionFrame()
+            if logFrame and logFrame:IsShown() then RefreshLogFrame() end
         end
         return
     end
@@ -1453,6 +1808,22 @@ local function HandleSyncMessage(message, sender)
                 state.excluded[bidder] = nil
             end
             RefreshAuctionFrame()
+            if logFrame and logFrame:IsShown() then RefreshLogFrame() end
+        end
+        return
+    end
+
+    if command == "H" then
+        local sequence, flag = string.match(rest, "^(%d+)\t([01])$")
+        sequence = tonumber(sequence)
+        if sequence and flag then
+            if flag == "1" then
+                state.excludedBids[sequence] = true
+            else
+                state.excludedBids[sequence] = nil
+            end
+            RefreshAuctionFrame()
+            if logFrame and logFrame:IsShown() then RefreshLogFrame() end
         end
         return
     end
@@ -1520,8 +1891,23 @@ local function CreateOptionsPanel()
     end)
     allLootCheckBox = allLoot
 
+    local chatFilter = CreateFrame("CheckButton", "EProllDisableChatFilterCheckBox", p, "InterfaceOptionsCheckButtonTemplate")
+    chatFilter:SetPoint("TOPLEFT", allLoot, "BOTTOMLEFT", 0, -8)
+    _G[chatFilter:GetName() .. "Text"]:SetText("Отключить фильтр чата")
+    chatFilter:SetScript("OnClick", function(self)
+        EnsureDB()
+        EProllDB.disableChatFilter = self:GetChecked() and true or false
+    end)
+    disableChatFilterCheckBox = chatFilter
+
+    local chatFilterDesc = p:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+    chatFilterDesc:SetPoint("TOPLEFT", chatFilter, "BOTTOMLEFT", 4, -2)
+    chatFilterDesc:SetWidth(520)
+    chatFilterDesc:SetJustifyH("LEFT")
+    chatFilterDesc:SetText("Если включено, во время аукциона первое число в любом сообщении рейда считается ставкой. Оф/офф всё равно помечает ставку как офф.")
+
     local allLootDesc = p:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
-    allLootDesc:SetPoint("TOPLEFT", allLoot, "BOTTOMLEFT", 4, -2)
+    allLootDesc:SetPoint("TOPLEFT", chatFilterDesc, "BOTTOMLEFT", 0, -10)
     allLootDesc:SetWidth(520)
     allLootDesc:SetJustifyH("LEFT")
 
@@ -1534,6 +1920,7 @@ local function CreateOptionsPanel()
         EnsureDB()
         cb:SetChecked(EProllDB.debugChat and true or false)
         allLoot:SetChecked(EProllDB.showAllLoot and true or false)
+        chatFilter:SetChecked(EProllDB.disableChatFilter and true or false)
     end
 
     InterfaceOptions_AddCategory(p)
@@ -1601,6 +1988,7 @@ frame:SetScript("OnEvent", function(self, event, ...)
     if event == "PLAYER_LOGIN" then
         EnsureDB()
         CreateAuctionFrame()
+        CreateLogFrame()
         CreateLootFrame()
         CreateOptionsPanel()
         if type(_G.RegisterAddonMessagePrefix) == "function" then
