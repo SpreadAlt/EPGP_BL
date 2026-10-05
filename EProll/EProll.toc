@@ -2,7 +2,7 @@
 ## Title: EProll
 ## Notes: EProll
 ## Author: Altruist
-## Version: 1.1.6
+## Version: 1.1.6b
 ## Dependencies: EPGP
 ## SavedVariables: EProllDB
 

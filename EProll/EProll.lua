@@ -4,7 +4,7 @@ BINDING_HEADER_EPROLL = "EProll"
 BINDING_NAME_EPROLL_AUCTION_MOUSEOVER = "Объявить предмет под курсором на аукцион"
 
 local ADDON = "EProll"
-local VERSION = "1.1.6"
+local VERSION = "1.1.6b"
 local SYNC_PREFIX = "EProll"
 local MIN_BID = 100
 local MIN_STEP = 50
@@ -319,13 +319,78 @@ local function StripOffMarkers(message)
     return normalized
 end
 
-local function DigitsToNumber(text)
-    if not text then return nil end
-    local digits = string.gsub(text, "%D", "")
-    if digits == "" then return nil end
-    local amount = tonumber(digits)
-    if not amount then return nil end
-    return math.floor(amount)
+local function NormalizeAmountText(text)
+    text = tostring(text or "")
+    text = string.gsub(text, "К", "к")
+    text = string.gsub(text, "к", "k")
+    text = string.lower(text)
+    text = string.gsub(text, "^%s+", "")
+    text = string.gsub(text, "%s+$", "")
+    return text
+end
+
+local function ParseAmountText(text)
+    text = NormalizeAmountText(text)
+    if text == "" then return nil end
+
+    local hasK = false
+    local body = string.match(text, "^(.-)%s*k%s*$")
+    if body then
+        hasK = true
+        text = body
+        text = string.gsub(text, "^%s+", "")
+        text = string.gsub(text, "%s+$", "")
+    end
+
+    if text == "" or not string.match(text, "^%d") or not string.match(text, "%d$") then
+        return nil
+    end
+    if string.find(text, "[^%d%s%p]") then
+        return nil
+    end
+
+    local groups = {}
+    for digits in string.gmatch(text, "%d+") do
+        table.insert(groups, digits)
+    end
+    if #groups == 0 then return nil end
+
+    if hasK then
+        if #groups == 1 then
+            local value = tonumber(groups[1])
+            return value and math.floor(value * 1000) or nil
+        end
+        if #groups == 2 and string.len(groups[2]) <= 3 then
+            local whole = tonumber(groups[1]) or 0
+            local fraction = tonumber(groups[2]) or 0
+            local scale = 10 ^ (3 - string.len(groups[2]))
+            return math.floor(whole * 1000 + fraction * scale)
+        end
+    end
+
+    if #groups == 1 then
+        local value = tonumber(groups[1])
+        return value and math.floor(value) or nil
+    end
+
+    if #groups == 2 and string.len(groups[2]) <= 3 then
+        local whole = tonumber(groups[1]) or 0
+        local fraction = tonumber(groups[2]) or 0
+        local scale = 10 ^ (3 - string.len(groups[2]))
+        return math.floor(whole * 1000 + fraction * scale)
+    end
+
+    local joined = table.concat(groups, "")
+    local value = tonumber(joined)
+    return value and math.floor(value) or nil
+end
+
+local function FirstAmountText(message)
+    local text = NormalizeAmountText(message)
+    local startPos = string.find(text, "%d")
+    if not startPos then return nil end
+    text = string.sub(text, startPos)
+    return string.match(text, "^(%d[%d%s%p]*k?)")
 end
 
 local function ParseBidMessage(message)
@@ -334,8 +399,7 @@ local function ParseBidMessage(message)
     local isOff = HasOffMarker(message)
 
     if IsChatFilterDisabled() then
-        local numericPart = string.match(tostring(message), "(%d[%d%s%p]*)")
-        local amount = DigitsToNumber(numericPart)
+        local amount = ParseAmountText(FirstAmountText(message))
         if amount then
             return amount, isOff
         end
@@ -343,14 +407,7 @@ local function ParseBidMessage(message)
     end
 
     local numericPart = StripOffMarkers(message)
-    if not string.find(numericPart, "%d") then
-        return nil, nil
-    end
-    if string.find(numericPart, "[^%d%s%p]") then
-        return nil, nil
-    end
-
-    local amount = DigitsToNumber(numericPart)
+    local amount = ParseAmountText(numericPart)
     if amount then
         return amount, isOff
     end
