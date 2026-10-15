@@ -631,6 +631,311 @@ local function CreateEPGPLogFrame()
   end
 end
 
+local function CreateEPGPPersonalLogFrame()
+    local f = CreateFrame("Frame", "EPGPPersonalLogFrame", EPGPFrame)
+    table.insert(SIDEFRAMES, f)
+
+    f:SetResizable(true)
+    f:SetMinResize(600, 435)
+    f:SetMaxResize(1200, 435)
+
+    f:Hide()
+    f:SetWidth(600)
+    f:SetHeight(435)
+    f:SetPoint("TOPLEFT", EPGPFrame, "TOPRIGHT", -37, -6)
+
+    local t = f:CreateTexture(nil, "OVERLAY")
+    t:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Corner")
+    t:SetWidth(32)
+    t:SetHeight(32)
+    t:SetPoint("TOPRIGHT", f, "TOPRIGHT", -6, -7)
+
+    local search_input = CreateFrame("EditBox", "EPGPPersonalSearchEditBox", f, "InputBoxTemplate")
+    search_input:SetPoint("TOPLEFT", f, "TOPLEFT", 23, 0)
+    search_input:SetPoint("TOPRIGHT", f, "TOPRIGHT", -117, 0)
+    search_input:SetHeight(40)
+    search_input:SetScript("OnEnterPressed", function(self)
+        self:ClearFocus()
+        f:OpenFor(self:GetText())
+    end);
+    search_input:SetScript("OnEscapePressed", OnEscapePressed);
+    search_input:SetAutoFocus(false);
+
+    local search_button = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    search_button:SetNormalFontObject("GameFontNormalSmall")
+    search_button:SetHighlightFontObject("GameFontHighlightSmall")
+    search_button:SetDisabledFontObject("GameFontDisableSmall")
+    search_button:SetHeight(BUTTON_HEIGHT)
+    search_button:SetPoint("LEFT", search_input, "RIGHT")
+    search_button:SetText("Поиск")
+    search_button:SetWidth(80)
+    search_button:SetScript(
+        "OnClick",
+        function(self, button, down)
+            f:OpenFor(search_input:GetText())
+        end)
+    f:SetBackdrop(
+        {
+            bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+            edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+            tile = true,
+            tileSize = 32,
+            edgeSize = 32,
+            insets = { left = 11, right = 12, top = 12, bottom = 11 }
+        }
+    )
+
+    local sizer = CreateFrame("Button", nil, f)
+    sizer:SetHeight(16)
+    sizer:SetWidth(16)
+    sizer:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 0, 0)
+    sizer:SetScript(
+        "OnMouseDown",
+        function(self) self:GetParent():StartSizing("BOTTOMRIGHT") end)
+    sizer:SetScript(
+        "OnMouseUp", function(self) self:GetParent():StopMovingOrSizing() end)
+
+    local line1 = sizer:CreateTexture(nil, "BACKGROUND")
+    line1:SetWidth(14)
+    line1:SetHeight(14)
+    line1:SetPoint("BOTTOMRIGHT", -8, 8)
+    line1:SetTexture("Interface\\Tooltips\\UI-Tooltip-Border")
+    local x = 0.1 * 14 / 17
+    line1:SetTexCoord(0.05 - x, 0.5, 0.05, 0.5 + x, 0.05, 0.5 - x, 0.5 + x, 0.5)
+
+    local line2 = sizer:CreateTexture(nil, "BACKGROUND")
+    line2:SetWidth(8)
+    line2:SetHeight(8)
+    line2:SetPoint("BOTTOMRIGHT", -8, 8)
+    line2:SetTexture("Interface\\Tooltips\\UI-Tooltip-Border")
+    local x = 0.1 * 8 / 17
+    line2:SetTexCoord(0.05 - x, 0.5, 0.05, 0.5 + x, 0.05, 0.5 - x, 0.5 + x, 0.5)
+
+    local cb = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+    cb:SetPoint("TOPRIGHT", f, "TOPRIGHT", -2, -3)
+
+    local export = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    export:SetNormalFontObject("GameFontNormalSmall")
+    export:SetHighlightFontObject("GameFontHighlightSmall")
+    export:SetDisabledFontObject("GameFontDisableSmall")
+    export:SetHeight(BUTTON_HEIGHT)
+    export:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 17, 13)
+    export:SetText(L["Export"])
+    export:SetWidth(export:GetTextWidth() + BUTTON_TEXT_PADDING)
+    export:SetScript(
+        "OnClick",
+        function(self, button, down)
+            EPGPExportImportFrame.export = true
+            EPGPExportImportFrame:Hide()
+            EPGPExportImportFrame:Show()
+        end)
+
+    local import = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    import:SetNormalFontObject("GameFontNormalSmall")
+    import:SetHighlightFontObject("GameFontHighlightSmall")
+    import:SetDisabledFontObject("GameFontDisableSmall")
+    import:SetHeight(BUTTON_HEIGHT)
+    import:SetPoint("LEFT", export, "RIGHT")
+    import:SetText(L["Import"])
+    import:SetWidth(import:GetTextWidth() + BUTTON_TEXT_PADDING)
+    import:SetScript(
+        "OnClick",
+        function(self, button, down)
+            EPGPExportImportFrame.export = false
+            EPGPExportImportFrame:Hide()
+            EPGPExportImportFrame:Show()
+        end)
+
+    local trim_log = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    trim_log:SetNormalFontObject("GameFontNormalSmall")
+    trim_log:SetHighlightFontObject("GameFontHighlightSmall")
+    trim_log:SetDisabledFontObject("GameFontDisableSmall")
+    trim_log:SetHeight(BUTTON_HEIGHT)
+    trim_log:SetPoint("CENTER", f, "CENTER")
+    trim_log:SetPoint("BOTTOM", import, "BOTTOM")
+    trim_log:SetText(L["Trim Log"])
+    trim_log:SetWidth(import:GetTextWidth() + BUTTON_TEXT_PADDING)
+    trim_log:SetScript(
+        "OnClick",
+        function(self, button, down)
+            StaticPopup_Show("EPGP_TRIM_LOG")
+        end)
+    trim_log:SetScript(
+        "OnEnter",
+        function(self)
+            GameTooltip_SetDefaultAnchor(GameTooltip, self)
+            GameTooltip:AddLine(L["Trims log to only entries in the last month."])
+            GameTooltip:AddLine(L["You cannot undo this action!"])
+            GameTooltip:ClearAllPoints()
+            GameTooltip:SetPoint("TOPLEFT", self, "TOPRIGHT")
+            GameTooltip:Show()
+        end)
+    trim_log:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    local undo = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    undo:SetNormalFontObject("GameFontNormalSmall")
+    undo:SetHighlightFontObject("GameFontHighlightSmall")
+    undo:SetDisabledFontObject("GameFontDisableSmall")
+    undo:SetHeight(BUTTON_HEIGHT)
+    undo:SetText(L["Undo"])
+    undo:SetWidth(undo:GetTextWidth() + BUTTON_TEXT_PADDING)
+    undo:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -17, 13)
+    undo:SetScript(
+        "OnClick",
+        function(self, value) EPGP:GetModule("log"):UndoLastAction() end)
+    undo:SetScript(
+        "OnUpdate",
+        function(self)
+            if EPGP:GetModule("log"):CanUndo() then
+                self:Enable()
+            else
+                self:Disable()
+            end
+        end)
+
+    local redo = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    redo:SetNormalFontObject("GameFontNormalSmall")
+    redo:SetHighlightFontObject("GameFontHighlightSmall")
+    redo:SetDisabledFontObject("GameFontDisableSmall")
+    redo:SetHeight(BUTTON_HEIGHT)
+    redo:SetText(L["Redo"])
+    redo:SetWidth(redo:GetTextWidth() + BUTTON_TEXT_PADDING)
+    redo:SetPoint("RIGHT", undo, "LEFT")
+    redo:SetScript(
+        "OnClick",
+        function(self, value) EPGP:GetModule("log"):RedoLastUndo() end)
+    redo:SetScript(
+        "OnUpdate",
+        function(self)
+            if EPGP:GetModule("log"):CanRedo() then
+                self:Enable()
+            else
+                self:Disable()
+            end
+        end)
+
+    local scrollParent = CreateFrame("Frame", nil, f)
+    scrollParent:SetPoint("TOP", t, "TOP", 0, -24)
+    scrollParent:SetPoint("BOTTOM", redo, "TOP", 0, 0)
+    scrollParent:SetPoint("LEFT", f, "LEFT", 10, 0)
+    scrollParent:SetPoint("RIGHT", f, "RIGHT", -10, 0)
+      
+    scrollParent:SetBackdrop(
+        {
+            bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            tile = true,
+            tileSize = 16,
+            edgeSize = 16,
+            insets = { left = 5, right = 5, top = 5, bottom = 5 }
+        })
+    scrollParent:SetBackdropBorderColor(TOOLTIP_DEFAULT_COLOR.r,
+        TOOLTIP_DEFAULT_COLOR.g,
+        TOOLTIP_DEFAULT_COLOR.b)
+    scrollParent:SetBackdropColor(TOOLTIP_DEFAULT_BACKGROUND_COLOR.r,
+        TOOLTIP_DEFAULT_BACKGROUND_COLOR.g,
+        TOOLTIP_DEFAULT_BACKGROUND_COLOR.b)
+
+    local font = "ChatFontSmall"
+    local fontHeight = select(2, getglobal(font):GetFont())
+    local recordHeight = fontHeight + 2
+    local recordWidth = scrollParent:GetWidth() - 35
+    local numLogRecordFrames = math.floor(
+        (scrollParent:GetHeight() - 3) / recordHeight)
+    local record = scrollParent:CreateFontString("EPGPPersonalLogRecordFrame1", "OVERLAY", font)
+    record:SetHeight(recordHeight)
+    record:SetWidth(recordWidth)
+    record:SetNonSpaceWrap(false)
+    record:SetPoint("TOPLEFT", scrollParent, "TOPLEFT", 5, -3)
+    for i = 2, numLogRecordFrames do
+        record = scrollParent:CreateFontString("EPGPPersonalLogRecordFrame" .. i, "OVERLAY", font)
+        record:SetHeight(recordHeight)
+        record:SetWidth(recordWidth)
+        record:SetNonSpaceWrap(false)
+        record:SetPoint("TOPLEFT", "EPGPPersonalLogRecordFrame" .. (i - 1), "BOTTOMLEFT")
+    end
+
+    f.records = {}
+    local scrollBar = CreateFrame("ScrollFrame", "EPGPPersonalLogRecordScrollFrame",
+        scrollParent, "FauxScrollFrameTemplateLight")
+    scrollBar:SetWidth(scrollParent:GetWidth() - 35)
+    scrollBar:SetHeight(scrollParent:GetHeight() - 10)
+    scrollBar:SetPoint("TOPRIGHT", scrollParent, "TOPRIGHT", -28, -6)
+
+    local function PersonalLogChanged()
+        if not f:IsVisible() then
+            return
+        end
+        local log = EPGP:GetModule("log")
+        local offset = FauxScrollFrame_GetOffset(scrollBar)
+        f.records = log:GetPersonalLogRecords(f.playerName)
+        local numRecords = #f.records
+        local numDisplayedRecords = math.min(numLogRecordFrames, math.max(0, numRecords - offset))
+        local recordWidth = scrollParent:GetWidth() - 35
+        for i = 1, numLogRecordFrames do
+            local record = getglobal("EPGPPersonalLogRecordFrame" .. i)
+            record:SetWidth(recordWidth)
+            local logIndex = i + offset - 1
+            if logIndex < numRecords then
+                record:SetText(f.records[logIndex + 1])
+                record:SetJustifyH("LEFT")
+                record:Show()
+            else
+                record:Hide()
+            end
+        end
+
+        FauxScrollFrame_Update(
+            scrollBar, numRecords, numDisplayedRecords, recordHeight)
+    end
+
+    f:SetScript("OnShow", PersonalLogChanged)
+    f:SetScript("OnSizeChanged", PersonalLogChanged)
+    scrollBar:SetScript(
+        "OnVerticalScroll",
+        function(self, value)
+            FauxScrollFrame_OnVerticalScroll(scrollBar, value, recordHeight, PersonalLogChanged)
+        end)
+    EPGP:GetModule("log"):RegisterCallback("LogChanged", PersonalLogChanged)
+
+    local epgpattisload = IsAddOnLoaded("EPGP_Attendance")
+  if epgpattisload == 1 then
+    local epgpa = CreateFrame("Button", "EPGPATPersonal", f, "UIPanelButtonTemplate")
+    epgpa:SetNormalFontObject("GameFontNormalSmall")
+    epgpa:SetHighlightFontObject("GameFontHighlightSmall")
+    epgpa:SetDisabledFontObject("GameFontDisableSmall")
+    epgpa:SetText(L["EPGPATT"])
+    epgpa:SetHeight(BUTTON_HEIGHT)
+    epgpa:SetWidth(epgpa:GetTextWidth() + BUTTON_TEXT_PADDING)
+    epgpa:ClearAllPoints()
+    epgpa:SetPoint("RIGHT", import, "RIGHT",90,0)
+    epgpa:SetScript(
+        "OnClick",
+        function(self, button, down)
+          if (EPGPAttendance.frmTitleBar and EPGPAttendance.frmTitleBar:IsShown()) then
+              EPGPAttendance:HideFrame();
+          else
+            EPGPAttendance:NavigatePage();
+          end
+        end)
+  end
+    function f:OpenFor(name)
+        if type(name) ~= "string" or name == "" then
+            name = UnitName("player")
+        end
+        self.playerName = name
+        search_input:SetText(name)
+        self.records = EPGP:GetModule("log"):GetPersonalLogRecords(name)
+        scrollBar.offset = 0
+        scrollBar:SetVerticalScroll(0)
+        if not self:IsShown() then
+            ToggleOnlySideFrame(self)
+        else
+            PersonalLogChanged()
+        end
+    end
+end
+
 local function EPGPSideFrameGPDropDown_Initialize(dropDown)
     local parent = dropDown:GetParent()
     for i = 1, GP:GetNumRecentItems() do
@@ -1284,13 +1589,41 @@ local function CreateEPGPSideFrame2()
                 reason = epFrame.otherEditBox:GetText()
             end
             local amount = epFrame.editBox:GetNumber()
-            EPGP:IncMassEPBy(reason, amount)
+            if EPGP:CanMassAwardEP() then
+                EPGP:IncMassEPBy(reason, amount)
+            end
         end)
+    epFrame.button:SetScript("OnUpdate", function(self)
+        local reason = UIDropDownMenu_GetText(epFrame.dropDown)
+        if reason == L["Other"] then
+            reason = epFrame.otherEditBox:GetText()
+        end
+        if EPGP:CanMassAwardEP() and EPGP:CanIncEPBy(reason, epFrame.editBox:GetNumber()) then
+            self:Enable()
+        else
+            self:Disable()
+        end
+    end)
 
+    epFrame.recurring:SetScript("OnUpdate", function(self)
+        local reason = UIDropDownMenu_GetText(epFrame.dropDown)
+        if reason == L["Other"] then
+            reason = epFrame.otherEditBox:GetText()
+        end
+        if EPGP:RunningRecurringEP() or
+            (EPGP:CanMassAwardEP() and EPGP:CanIncEPBy(reason, epFrame.editBox:GetNumber())) then
+            self:Enable()
+        else
+            self:Disable()
+        end
+    end)
     epFrame.recurring:SetScript(
         "OnClick",
         function(self)
             if not EPGP:RunningRecurringEP() then
+                if not EPGP:CanMassAwardEP() then
+                    return
+                end
                 local reason = UIDropDownMenu_GetText(epFrame.dropDown)
                 if reason == L["Other"] then
                     reason = epFrame.otherEditBox:GetText()
@@ -1419,6 +1752,7 @@ local function CreateEPGPFrameStandings()
 
     -- Make the log frame
     CreateEPGPLogFrame()
+    CreateEPGPPersonalLogFrame()
 
     -- Make the side frame
     CreateEPGPSideFrame()
@@ -1446,6 +1780,13 @@ local function CreateEPGPFrameStandings()
         function()
             ToggleOnlySideFrame(EPGPSideFrame2)
         end)
+    award:SetScript("OnUpdate", function(self)
+        if EPGP:CanMassAwardEP() then
+            self:Enable()
+        else
+            self:Disable()
+        end
+    end)
     local log = CreateFrame("Button", nil, main, "UIPanelButtonTemplate")
     log:SetNormalFontObject("GameFontNormalSmall")
     log:SetHighlightFontObject("GameFontHighlightSmall")
@@ -1459,6 +1800,25 @@ local function CreateEPGPFrameStandings()
         function(self, button, down)
             ToggleOnlySideFrame(EPGPLogFrame)
         end)
+
+    local personalLog = CreateFrame("Button", nil, main, "UIPanelButtonTemplate")
+    personalLog:SetNormalFontObject("GameFontNormalSmall")
+    personalLog:SetHighlightFontObject("GameFontHighlightSmall")
+    personalLog:SetDisabledFontObject("GameFontDisableSmall")
+    personalLog:SetHeight(BUTTON_HEIGHT)
+    personalLog:SetWidth(log:GetWidth())
+    personalLog:SetText("ЛЖ")
+    personalLog:SetPoint("BOTTOMRIGHT", log, "TOPRIGHT", 0, 4)
+    personalLog:SetScript("OnClick", function()
+        local name
+        if EPGPSideFrame:IsShown() and EPGPSideFrame.name then
+            name = EPGPSideFrame.name
+        elseif UnitExists("target") and UnitIsPlayer("target") then
+            name = UnitName("target")
+        end
+        name = name or UnitName("player")
+        EPGPPersonalLogFrame:OpenFor(name)
+    end)
 
     local decay = CreateFrame("Button", nil, main, "UIPanelButtonTemplate")
     decay:SetNormalFontObject("GameFontNormalSmall")
@@ -1580,18 +1940,34 @@ local function CreateEPGPFrameStandings()
     -- Make all our rows have a check on them and setup the OnClick
     -- handler for each row.
     for i, r in ipairs(rowFrame.rows) do
-        r.check = r:CreateTexture(nil, "BACKGROUND")
-        r.check:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
-        r.check:SetWidth(r:GetHeight())
-        r.check:SetHeight(r:GetHeight())
-        r.check:SetPoint("RIGHT", r.cells[1])
+        r.check = CreateFrame("Frame", nil, r)
+        r.check:SetWidth(34)
+        r.check:SetHeight(16)
+        r.check:SetPoint("RIGHT", r.cells[2], "LEFT", -6, 0)
+        r.check:SetBackdrop({
+            bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            tile = false, edgeSize = 10,
+            insets = { left = 2, right = 2, top = 2, bottom = 2 }
+        })
+        r.check:SetBackdropColor(0.10, 0.24, 0.18, 0.85)
+        r.check:SetBackdropBorderColor(0.32, 0.85, 0.56, 0.95)
+        local standbyText = r.check:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        standbyText:SetPoint("CENTER", r.check, "CENTER", 0, 0)
+        standbyText:SetText("Зам")
+        standbyText:SetTextColor(0.54, 1.0, 0.67)
+        r.cells[1]:SetWidth(r.cells[1]:GetWidth() - 44)
+        r.cells[2]:ClearAllPoints()
+        r.cells[2]:SetPoint("RIGHT", r, "RIGHT", -5, 0)
 
         r:RegisterForClicks("LeftButtonDown")
         r:SetScript(
             "OnClick",
             function(self, value)
-                if IsModifiedClick("QUESTWATCHTOGGLE") then
-                    if self.check:IsShown() then
+                if IsShiftKeyDown() then
+                    if EPGP:IsMemberInExtrasList(self.name) then
+                        EPGP:DeSelectMember(self.name)
+                    elseif not UnitInRaid("player") and EPGP:GetMembersInAwardList()[self.name] then
                         EPGP:DeSelectMember(self.name)
                     else
                         EPGP:SelectMember(self.name)
@@ -1650,14 +2026,8 @@ local function CreateEPGPFrameStandings()
             local ep = EPGP:GetEPGP(row.name)
             row.cells[2]:SetText(ep)
             row.check:Hide()
-            if UnitInRaid("player") and EPGP:StandingsShowEveryone() then
-                if EPGP:IsMemberInAwardList(row.name) then
-                    row.check:Show()
-                end
-            elseif EPGP:IsAnyMemberInExtrasList() then
-                if EPGP:IsMemberInAwardList(row.name) then
-                    row.check:Show()
-                end
+            if EPGP:GetMembersInAwardList()[row.name] then
+                row.check:Show()
             end
             row:SetAlpha(ep < minEP and 0.6 or 1)
             row:Show()

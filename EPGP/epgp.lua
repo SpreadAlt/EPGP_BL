@@ -623,6 +623,9 @@ end
 function EPGP:GetMembersInAwardList()
   return selected
 end
+function EPGP:CanMassAwardEP()
+  return not not (UnitInRaid("player") or selected._count > 0)
+end
 function EPGP:IsMemberInAwardList(name)
   if UnitInRaid("player") then
     -- If we are in raid the member is in the award list if it is in
@@ -639,7 +642,7 @@ function EPGP:IsMemberInAwardList(name)
 end
 
 function EPGP:IsMemberInExtrasList(name)
-  return UnitInRaid("player") and selected[name]
+  return not not selected[name]
 end
 
 function EPGP:IsAnyMemberInExtrasList()
@@ -890,14 +893,19 @@ function EPGP:GetMain(name)
 end
 
 function EPGP:IncMassEPBy(reason, amount)
+  if not self:CanMassAwardEP() then
+    return false
+  end
   local awarded = {}
   local extras_awarded = {}
   local extras_amount = math.floor(global_config.extras_p * 0.01 * amount)
-  local extras_reason = reason .. " - " .. L["Standby"]
+  local extras_reason = "Замена: " .. reason
 
   for i=1,EPGP:GetNumMembers() do
     local name = EPGP:GetMember(i)
-    if EPGP:IsMemberInAwardList(name) then
+    if EPGP:IsMemberInAwardList(name) or
+       (not UnitInRaid("player") and GetNumPartyMembers() > 0 and
+        (name == UnitName("player") or UnitInParty(name))) then
       -- EPGP:GetMain() will return the input name if it doesn't find a main,
       -- so we can't use it to validate that this actually is a character who
       -- can recieve EP.
@@ -916,7 +924,7 @@ function EPGP:IncMassEPBy(reason, amount)
       end
     end
   end
-  if next(awarded) then
+  if next(awarded) or next(extras_awarded) then
     if next(extras_awarded) then
       callbacks:Fire("MassEPAward", awarded, reason, amount,
                      extras_awarded, extras_reason, extras_amount)
@@ -924,6 +932,7 @@ function EPGP:IncMassEPBy(reason, amount)
       callbacks:Fire("MassEPAward", awarded, reason, amount)
     end
   end
+  return true
 end
 
 function EPGP:IncMassGPBy(reason, amount)

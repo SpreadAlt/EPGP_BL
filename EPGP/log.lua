@@ -113,6 +113,20 @@ function mod:SetFilter(search)
     callbacks:Fire("LogChanged", #self.db.profile.filtred_logs)
 end
 
+function mod:GetPersonalLogRecords(name)
+    local records = {}
+    if type(name) ~= "string" or name == "" then
+        return records
+    end
+    for i = #self.db.profile.log, 1, -1 do
+        local entry = self.db.profile.log[i]
+        if entry[3] == name then
+            table.insert(records, LogRecordToString(entry))
+        end
+    end
+    return records
+end
+
 function mod:GetNumRecords()
     if self.db.profile.filter == "" then
         return #self.db.profile.log

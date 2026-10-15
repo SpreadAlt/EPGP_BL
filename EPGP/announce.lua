@@ -83,10 +83,12 @@ end
 
 function mod:MassEPAward(event_name, names, reason, amount,
                          extras_names, extras_reason, extras_amount)
-  local normal = MakeCommaSeparated(names)
-  mod:Announce(L["% d EP (%s) to %s"], amount, reason, normal)
+  if next(names) then
+    local normal = MakeCommaSeparated(names)
+    mod:Announce(L["% d EP (%s) to %s"], amount, reason, normal)
+  end
 
-  if extras_names then
+  if extras_names and next(extras_names) then
     local extras = MakeCommaSeparated(extras_names)
     mod:Announce(L["% d EP (%s) to %s"], extras_amount, extras_reason, extras)
   end
