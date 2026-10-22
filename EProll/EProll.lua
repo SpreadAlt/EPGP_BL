@@ -1961,7 +1961,6 @@ local function CreateOptionsPanel()
     chatFilterDesc:SetPoint("TOPLEFT", chatFilter, "BOTTOMLEFT", 4, -2)
     chatFilterDesc:SetWidth(520)
     chatFilterDesc:SetJustifyH("LEFT")
-    chatFilterDesc:SetText("Если включено, во время аукциона первое число в любом сообщении рейда считается ставкой. Оф/офф всё равно помечает ставку как офф.")
 
     local allLootDesc = p:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
     allLootDesc:SetPoint("TOPLEFT", chatFilterDesc, "BOTTOMLEFT", 0, -10)

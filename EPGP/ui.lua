@@ -1950,12 +1950,13 @@ local function CreateEPGPFrameStandings()
             tile = false, edgeSize = 10,
             insets = { left = 2, right = 2, top = 2, bottom = 2 }
         })
-        r.check:SetBackdropColor(0.10, 0.24, 0.18, 0.85)
-        r.check:SetBackdropBorderColor(0.32, 0.85, 0.56, 0.95)
+        r.check:SetBackdropColor(0.28, 0.16, 0.06, 0.85)
+        r.check:SetBackdropBorderColor(1.0, 0.54, 0.18, 0.95)
         local standbyText = r.check:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         standbyText:SetPoint("CENTER", r.check, "CENTER", 0, 0)
         standbyText:SetText("Зам")
-        standbyText:SetTextColor(0.54, 1.0, 0.67)
+        standbyText:SetTextColor(1.0, 0.67, 0.23)
+        r.check.label = standbyText
         r.cells[1]:SetWidth(r.cells[1]:GetWidth() - 44)
         r.cells[2]:ClearAllPoints()
         r.cells[2]:SetPoint("RIGHT", r, "RIGHT", -5, 0)
@@ -2026,7 +2027,17 @@ local function CreateEPGPFrameStandings()
             local ep = EPGP:GetEPGP(row.name)
             row.cells[2]:SetText(ep)
             row.check:Hide()
-            if EPGP:GetMembersInAwardList()[row.name] then
+            if UnitInRaid(row.name) then
+                row.check.label:SetText("Рейд")
+                row.check.label:SetTextColor(0.54, 1.0, 0.67)
+                row.check:SetBackdropColor(0.10, 0.24, 0.18, 0.85)
+                row.check:SetBackdropBorderColor(0.32, 0.85, 0.56, 0.95)
+                row.check:Show()
+            elseif EPGP:IsMemberInExtrasList(row.name) then
+                row.check.label:SetText("Зам")
+                row.check.label:SetTextColor(1.0, 0.67, 0.23)
+                row.check:SetBackdropColor(0.28, 0.16, 0.06, 0.85)
+                row.check:SetBackdropBorderColor(1.0, 0.54, 0.18, 0.95)
                 row.check:Show()
             end
             row:SetAlpha(ep < minEP and 0.6 or 1)
