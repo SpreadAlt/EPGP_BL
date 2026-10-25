@@ -607,9 +607,10 @@ local function CreateEPGPLogFrame()
         end)
     EPGP:GetModule("log"):RegisterCallback("LogChanged", LogChanged)
 
-    local epgpattisload = IsAddOnLoaded("EPGP_Attendance") or (GetAddOnEnableState(UnitName("player"), "EPGP_Attendance") > 0 and 1 or nil)
+    local _, _, _, attendanceEnabled = GetAddOnInfo("EPGP_Attendance")
+    local epgpattisload = IsAddOnLoaded("EPGP_Attendance") or attendanceEnabled == true or attendanceEnabled == 1
 -- print(epgpattisload)
-  if epgpattisload == 1 then
+  if epgpattisload then
     local epgpa = CreateFrame("Button", "EPGPAT", f, "UIPanelButtonTemplate")
     epgpa:SetNormalFontObject("GameFontNormalSmall")
     epgpa:SetHighlightFontObject("GameFontHighlightSmall")
@@ -898,8 +899,9 @@ local function CreateEPGPPersonalLogFrame()
         end)
     EPGP:GetModule("log"):RegisterCallback("LogChanged", PersonalLogChanged)
 
-    local epgpattisload = IsAddOnLoaded("EPGP_Attendance") or (GetAddOnEnableState(UnitName("player"), "EPGP_Attendance") > 0 and 1 or nil)
-  if epgpattisload == 1 then
+    local _, _, _, attendanceEnabled = GetAddOnInfo("EPGP_Attendance")
+    local epgpattisload = IsAddOnLoaded("EPGP_Attendance") or attendanceEnabled == true or attendanceEnabled == 1
+  if epgpattisload then
     local epgpa = CreateFrame("Button", "EPGPATPersonal", f, "UIPanelButtonTemplate")
     epgpa:SetNormalFontObject("GameFontNormalSmall")
     epgpa:SetHighlightFontObject("GameFontHighlightSmall")

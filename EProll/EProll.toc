@@ -5,4 +5,5 @@
 ## Version: 1.1.9
 ## SavedVariables: EProllDB
 
+Bindings.xml
 EProll.lua

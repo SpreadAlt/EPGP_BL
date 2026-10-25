@@ -1962,7 +1962,6 @@ local function CreateOptionsPanel()
     chatFilterDesc:SetPoint("TOPLEFT", chatFilter, "BOTTOMLEFT", 4, -2)
     chatFilterDesc:SetWidth(520)
     chatFilterDesc:SetJustifyH("LEFT")
-    chatFilterDesc:SetText("Если включено, во время аукциона первое число в любом сообщении рейда считается ставкой. Оф/офф всё равно помечает ставку как офф.")
 
     local allLootDesc = p:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
     allLootDesc:SetPoint("TOPLEFT", chatFilterDesc, "BOTTOMLEFT", 0, -10)
@@ -2143,7 +2142,8 @@ local function Start()
             handler(frame, "PLAYER_LOGIN")
         end
     end
-    if GetAddOnEnableState(UnitName("player"), "EPGP_Attendance") > 0 then
+    local _, _, _, attendanceEnabled = GetAddOnInfo("EPGP_Attendance")
+    if IsAddOnLoaded("EPGP_Attendance") or attendanceEnabled == true or attendanceEnabled == 1 then
         LoadAddOn("EPGP_Attendance")
     end
     LoadAddOn("EPGP_EPBackup")
