@@ -8,4 +8,7 @@
       end
     end
   </Binding>
+  <Binding name="EPROLL_AUCTION_MOUSEOVER" header="EPROLL">
+    EProll_AuctionMouseover()
+  </Binding>
 </Bindings>

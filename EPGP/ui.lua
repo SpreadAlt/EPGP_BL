@@ -607,7 +607,7 @@ local function CreateEPGPLogFrame()
         end)
     EPGP:GetModule("log"):RegisterCallback("LogChanged", LogChanged)
 
-    local epgpattisload = IsAddOnLoaded("EPGP_Attendance")
+    local epgpattisload = IsAddOnLoaded("EPGP_Attendance") or (GetAddOnEnableState(UnitName("player"), "EPGP_Attendance") > 0 and 1 or nil)
 -- print(epgpattisload)
   if epgpattisload == 1 then
     local epgpa = CreateFrame("Button", "EPGPAT", f, "UIPanelButtonTemplate")
@@ -898,7 +898,7 @@ local function CreateEPGPPersonalLogFrame()
         end)
     EPGP:GetModule("log"):RegisterCallback("LogChanged", PersonalLogChanged)
 
-    local epgpattisload = IsAddOnLoaded("EPGP_Attendance")
+    local epgpattisload = IsAddOnLoaded("EPGP_Attendance") or (GetAddOnEnableState(UnitName("player"), "EPGP_Attendance") > 0 and 1 or nil)
   if epgpattisload == 1 then
     local epgpa = CreateFrame("Button", "EPGPATPersonal", f, "UIPanelButtonTemplate")
     epgpa:SetNormalFontObject("GameFontNormalSmall")
@@ -932,6 +932,333 @@ local function CreateEPGPPersonalLogFrame()
             ToggleOnlySideFrame(self)
         else
             PersonalLogChanged()
+        end
+    end
+end
+
+local function CreateEPGPEPGraphFrame()
+    local f = CreateFrame("Frame", "EPGPEPGraphFrame", EPGPFrame)
+    table.insert(SIDEFRAMES, f)
+    f:Hide()
+    f:SetWidth(600)
+    f:SetHeight(390)
+    f:SetPoint("TOPLEFT", EPGPFrame, "TOPRIGHT", -37, -6)
+    f:SetBackdrop({
+        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+        tile = true, tileSize = 32, edgeSize = 32,
+        insets = { left = 11, right = 12, top = 12, bottom = 11 }
+    })
+    f:SetBackdropColor(0, 0, 0, 1)
+
+    local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOP", f, "TOP", 0, -21)
+    title:SetWidth(490)
+    title:SetHeight(18)
+
+    local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+    close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -2, -3)
+
+    local periods = {{"Это КД", "cd"}, {"7 дней", 7}, {"30 дней", 30}, {"90 дней", 90}, {"Всё", 0}}
+    local periodButtons = {}
+    f.period = 30
+    for i, period in ipairs(periods) do
+        local btn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+        btn:SetNormalFontObject("GameFontNormalSmall")
+        btn:SetHighlightFontObject("GameFontHighlightSmall")
+        btn:SetDisabledFontObject("GameFontDisableSmall")
+        btn:SetHeight(22)
+        btn:SetWidth(96)
+        btn:SetPoint("TOPLEFT", f, "TOPLEFT", 38 + (i - 1) * 100, -48)
+        btn:SetText(period[1])
+        btn:SetScript("OnClick", function()
+            f.period = period[2]
+            f:Refresh()
+        end)
+        periodButtons[i] = btn
+    end
+
+    local balanceText = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    balanceText:SetPoint("TOPLEFT", f, "TOPLEFT", 36, -83)
+    balanceText:SetWidth(176)
+    balanceText:SetJustifyH("LEFT")
+    local spentText = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    spentText:SetPoint("LEFT", balanceText, "RIGHT", 4, 0)
+    spentText:SetWidth(176)
+    spentText:SetJustifyH("LEFT")
+    local changeText = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    changeText:SetPoint("LEFT", spentText, "RIGHT", 4, 0)
+    changeText:SetWidth(155)
+    changeText:SetJustifyH("LEFT")
+
+    local chart = CreateFrame("Frame", nil, f)
+    chart:SetPoint("TOPLEFT", f, "TOPLEFT", 28, -112)
+    chart:SetWidth(544)
+    chart:SetHeight(268)
+    chart:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 12,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 }
+    })
+    chart:SetBackdropColor(0.06, 0.07, 0.08, 0.95)
+    chart:SetBackdropBorderColor(0.47, 0.44, 0.32, 0.85)
+
+    local barArea = CreateFrame("Frame", nil, chart)
+    barArea:SetPoint("TOPLEFT", chart, "TOPLEFT", 51, -19)
+    barArea:SetWidth(460)
+    barArea:SetHeight(210)
+
+    for _, y in ipairs({0, 52, 105, 158, 210}) do
+        local line = barArea:CreateTexture(nil, "BACKGROUND")
+        line:SetTexture(1, 1, 1, 0.12)
+        line:SetHeight(1)
+        line:SetPoint("TOPLEFT", barArea, "TOPLEFT", 0, -y)
+        line:SetPoint("TOPRIGHT", barArea, "TOPRIGHT", 0, -y)
+    end
+    local zeroLine = barArea:CreateTexture(nil, "BACKGROUND")
+    zeroLine:SetTexture(1, 1, 1, 0.45)
+    zeroLine:SetHeight(1)
+    zeroLine:SetPoint("LEFT", barArea, "LEFT", 0, 0)
+    zeroLine:SetWidth(barArea:GetWidth())
+
+    local upperAxis = chart:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    upperAxis:SetPoint("TOPRIGHT", barArea, "TOPLEFT", -6, 0)
+    local zeroAxis = chart:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    zeroAxis:SetText("0")
+    local lowerAxis = chart:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    lowerAxis:SetPoint("BOTTOMRIGHT", barArea, "BOTTOMLEFT", -6, 0)
+    local firstDate = chart:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    firstDate:SetPoint("TOPLEFT", barArea, "BOTTOMLEFT", 0, -2)
+    local lastDate = chart:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    lastDate:SetPoint("TOPRIGHT", barArea, "BOTTOMRIGHT", 0, -2)
+
+    local emptyText = barArea:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    emptyText:SetPoint("CENTER", barArea, "CENTER", 0, 0)
+    emptyText:SetText("Нет записей EP за выбранный период")
+
+    local columns = {}
+    local balancePoints = {}
+    local spentPoints = {}
+    local changePoints = {}
+    local balanceLineSegments = {}
+    local spentLineSegments = {}
+    local changeLineSegments = {}
+    local imagePath = "Interface\\AddOns\\EPGP\\images\\"
+
+    local function HideSegments(pool)
+        for i = 1, #pool do
+            pool[i]:Hide()
+        end
+    end
+
+    local function EnsureSegment(pool, index, r, g, b)
+        local seg = pool[index]
+        if not seg then
+            seg = barArea:CreateTexture(nil, "BORDER")
+            seg:SetTexture("Interface\\Buttons\\WHITE8X8")
+            seg:SetVertexColor(r, g, b)
+            seg:SetWidth(3)
+            seg:SetHeight(3)
+            pool[index] = seg
+        end
+        return seg
+    end
+
+    local function DrawSeries(pool, xPositions, yPositions, count, r, g, b)
+        HideSegments(pool)
+        local segIndex = 1
+        for i = 1, count - 1 do
+            local x1, y1 = xPositions[i], yPositions[i]
+            local x2, y2 = xPositions[i + 1], yPositions[i + 1]
+            if x1 and y1 and x2 and y2 then
+                local dx = x2 - x1
+                local dy = y2 - y1
+                local steps = math.ceil(math.max(math.abs(dx), math.abs(dy)) / 2)
+                if steps < 1 then
+                    steps = 1
+                end
+                for step = 0, steps do
+                    local seg = EnsureSegment(pool, segIndex, r, g, b)
+                    local x = x1 + dx * (step / steps)
+                    local y = y1 + dy * (step / steps)
+                    seg:ClearAllPoints()
+                    seg:SetPoint("CENTER", barArea, "TOPLEFT", x, -y)
+                    seg:Show()
+                    segIndex = segIndex + 1
+                end
+            end
+        end
+    end
+
+    for i = 1, 48 do
+        local col = CreateFrame("Button", nil, barArea)
+        col:SetWidth(1)
+        col:SetHeight(210)
+        col:Hide()
+        col:SetScript("OnEnter", function(self)
+            local bucket = self.bucket
+            if not bucket then return end
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            local d = date("%d.%m.%Y", bucket.start)
+            if date("%d.%m.%Y", bucket.finish) ~= d then
+                d = d .. " - " .. date("%d.%m.%Y", bucket.finish)
+            end
+            GameTooltip:AddLine(d, 1, 0.82, 0)
+            if type(bucket.balance) == "number" then
+                GameTooltip:AddDoubleLine("Баланс EP", tostring(bucket.balance), 0.45, 1, 0.55, 1, 1, 1)
+            else
+                GameTooltip:AddLine("Текущий баланс EP недоступен", 1, 0.35, 0.35)
+            end
+            GameTooltip:AddDoubleLine("Получено EP", tostring(bucket.earned), 0.85, 0.85, 0.85, 1, 1, 1)
+            GameTooltip:AddDoubleLine("Потрачено EP", tostring(bucket.spent), 1, 0.26, 0.26, 1, 1, 1)
+            GameTooltip:AddDoubleLine("Изменение EP", string.format("%+d", bucket.change), 1, 0.65, 0.22, 1, 1, 1)
+            GameTooltip:Show()
+        end)
+        col:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        columns[i] = col
+
+        local balance = barArea:CreateTexture(nil, "ARTWORK")
+        balance:SetTexture(imagePath .. "graphdot")
+        balance:SetVertexColor(0.24, 0.85, 0.42)
+        balance:SetWidth(10)
+        balance:SetHeight(10)
+        balance:Hide()
+        balancePoints[i] = balance
+
+        local loss = barArea:CreateTexture(nil, "ARTWORK")
+        loss:SetTexture(imagePath .. "graphdot")
+        loss:SetVertexColor(1.0, 0.26, 0.26)
+        loss:SetWidth(10)
+        loss:SetHeight(10)
+        loss:Hide()
+        spentPoints[i] = loss
+
+        local change = barArea:CreateTexture(nil, "ARTWORK")
+        change:SetTexture(imagePath .. "graphdot")
+        change:SetVertexColor(1.0, 0.65, 0.22)
+        change:SetWidth(10)
+        change:SetHeight(10)
+        change:Hide()
+        changePoints[i] = change
+    end
+    function f:Refresh()
+        if not self.playerName then return end
+        title:SetText("График EP: " .. self.playerName)
+        local buckets, earned, spent, currentEP = EPGP:GetModule("log"):GetEPGraphData(self.playerName, self.period)
+        if type(currentEP) == "number" then
+            balanceText:SetText(string.format("|cFF55DD77Баланс: %d|r", currentEP))
+        else
+            balanceText:SetText("|cFF55DD77Баланс: н/д|r")
+        end
+        spentText:SetText(string.format("|cFFFF4444Потрачено: %d|r", spent))
+        changeText:SetText(string.format("|cFFFFA638Изменение: %+d|r", earned - spent))
+        for i, button in ipairs(periodButtons) do
+            if periods[i][2] == self.period then
+                button:Disable()
+            else
+                button:Enable()
+            end
+        end
+
+        local minimum, maximum = 0, 0
+        for _, bucket in ipairs(buckets) do
+            if type(bucket.balance) == "number" then
+                minimum = math.min(minimum, bucket.balance)
+                maximum = math.max(maximum, bucket.balance)
+            end
+            minimum = math.min(minimum, -bucket.spent, bucket.change)
+            maximum = math.max(maximum, bucket.change)
+        end
+        local margin = math.max(1, (maximum - minimum) * 0.08)
+        minimum = minimum - margin
+        maximum = maximum + margin
+        local function ToY(value)
+            return 5 + (maximum - value) / (maximum - minimum) * 200
+        end
+        local zeroY = ToY(0)
+        zeroLine:ClearAllPoints()
+        zeroLine:SetPoint("TOPLEFT", barArea, "TOPLEFT", 0, -zeroY)
+        zeroAxis:ClearAllPoints()
+        zeroAxis:SetPoint("RIGHT", barArea, "TOPLEFT", -6, -zeroY)
+        upperAxis:SetText(string.format("%+d", math.floor(maximum + 0.5)))
+        lowerAxis:SetText(string.format("%+d", math.ceil(minimum - 0.5)))
+
+        if earned == 0 and spent == 0 and type(currentEP) ~= "number" then
+            emptyText:Show()
+        else
+            emptyText:Hide()
+        end
+        firstDate:SetText(#buckets > 0 and date("%d.%m.%Y", buckets[1].start) or "")
+        lastDate:SetText(#buckets > 0 and date("%d.%m.%Y", buckets[#buckets].finish) or "")
+
+        local count = #buckets
+        local slot = barArea:GetWidth() / math.max(1, count)
+        local xPositions = {}
+        local balanceY = {}
+        local spentY = {}
+        local changeY = {}
+        for i, col in ipairs(columns) do
+            local bucket = buckets[i]
+            if bucket then
+                col.bucket = bucket
+                col:ClearAllPoints()
+                col:SetPoint("TOPLEFT", barArea, "TOPLEFT", (i - 1) * slot, 0)
+                col:SetWidth(slot)
+                col:Show()
+                local x = (i - 0.5) * slot
+                xPositions[i] = x
+                if type(bucket.balance) == "number" then
+                    balanceY[i] = ToY(bucket.balance)
+                    balancePoints[i]:ClearAllPoints()
+                    balancePoints[i]:SetPoint("CENTER", barArea, "TOPLEFT", x, -balanceY[i])
+                    balancePoints[i]:Show()
+                else
+                    balancePoints[i]:Hide()
+                end
+                spentY[i] = ToY(-bucket.spent)
+                changeY[i] = ToY(bucket.change)
+                spentPoints[i]:ClearAllPoints()
+                changePoints[i]:ClearAllPoints()
+                spentPoints[i]:SetPoint("CENTER", barArea, "TOPLEFT", x, -spentY[i])
+                changePoints[i]:SetPoint("CENTER", barArea, "TOPLEFT", x, -changeY[i])
+                spentPoints[i]:Show()
+                changePoints[i]:Show()
+            else
+                col.bucket = nil
+                col:Hide()
+                balancePoints[i]:Hide()
+                spentPoints[i]:Hide()
+                changePoints[i]:Hide()
+            end
+        end
+        if count > 1 and type(currentEP) == "number" then
+            DrawSeries(balanceLineSegments, xPositions, balanceY, count, 0.24, 0.85, 0.42)
+        else
+            HideSegments(balanceLineSegments)
+        end
+        if count > 1 then
+            DrawSeries(spentLineSegments, xPositions, spentY, count, 1.0, 0.26, 0.26)
+            DrawSeries(changeLineSegments, xPositions, changeY, count, 1.0, 0.65, 0.22)
+        else
+            HideSegments(spentLineSegments)
+            HideSegments(changeLineSegments)
+        end
+    end
+
+    f:SetScript("OnShow", function(self) self:Refresh() end)
+    EPGP:GetModule("log"):RegisterCallback("LogChanged", function()
+        if f:IsShown() then f:Refresh() end
+    end)
+    function f:OpenFor(name)
+        if type(name) ~= "string" or name == "" then
+            name = UnitName("player")
+        end
+        self.playerName = name
+        if self:IsShown() then
+            self:Refresh()
+        else
+            ToggleOnlySideFrame(self)
         end
     end
 end
@@ -1753,6 +2080,7 @@ local function CreateEPGPFrameStandings()
     -- Make the log frame
     CreateEPGPLogFrame()
     CreateEPGPPersonalLogFrame()
+    CreateEPGPEPGraphFrame()
 
     -- Make the side frame
     CreateEPGPSideFrame()
@@ -1818,6 +2146,24 @@ local function CreateEPGPFrameStandings()
         end
         name = name or UnitName("player")
         EPGPPersonalLogFrame:OpenFor(name)
+    end)
+
+    local epGraph = CreateFrame("Button", nil, main, "UIPanelButtonTemplate")
+    epGraph:SetNormalFontObject("GameFontNormalSmall")
+    epGraph:SetHighlightFontObject("GameFontHighlightSmall")
+    epGraph:SetDisabledFontObject("GameFontDisableSmall")
+    epGraph:SetHeight(BUTTON_HEIGHT)
+    epGraph:SetWidth(46)
+    epGraph:SetText("Гр")
+    epGraph:SetPoint("RIGHT", personalLog, "LEFT", -4, 0)
+    epGraph:SetScript("OnClick", function()
+        local name
+        if EPGPSideFrame:IsShown() and EPGPSideFrame.name then
+            name = EPGPSideFrame.name
+        elseif UnitExists("target") and UnitIsPlayer("target") then
+            name = UnitName("target")
+        end
+        EPGPEPGraphFrame:OpenFor(name or UnitName("player"))
     end)
 
     local decay = CreateFrame("Button", nil, main, "UIPanelButtonTemplate")

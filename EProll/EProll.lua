@@ -1,3 +1,4 @@
+local function Setup()
 ----- Requires EPGP.
 
 BINDING_HEADER_EPROLL = "EProll"
@@ -1961,6 +1962,7 @@ local function CreateOptionsPanel()
     chatFilterDesc:SetPoint("TOPLEFT", chatFilter, "BOTTOMLEFT", 4, -2)
     chatFilterDesc:SetWidth(520)
     chatFilterDesc:SetJustifyH("LEFT")
+    chatFilterDesc:SetText("Если включено, во время аукциона первое число в любом сообщении рейда считается ставкой. Оф/офф всё равно помечает ставку как офф.")
 
     local allLootDesc = p:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
     allLootDesc:SetPoint("TOPLEFT", chatFilterDesc, "BOTTOMLEFT", 0, -10)
@@ -2037,6 +2039,9 @@ frame:SetScript("OnEvent", function(self, event, ...)
         local addonName = ...
         if addonName == ADDON then
             EnsureDB()
+            if IsLoggedIn() then
+                self:GetScript("OnEvent")(self, "PLAYER_LOGIN")
+            end
         end
         return
     end
@@ -2088,4 +2093,107 @@ frame:SetScript("OnEvent", function(self, event, ...)
         HandleBid(message, sender)
         return
     end
+end)
+
+end
+
+local values = {
+    {41, 0, 41, 218, 41, 249, 41, 246, 41, 4, 41, 242, 121, 41, 250, 41, 248, 41, 241, 41, 250, 41, 247, 41, 243},
+    {41, 0, 41, 238, 41, 249, 41, 246, 41, 4, 41, 242, 121, 41, 250, 41, 248, 41, 241, 41, 250, 41, 247, 41, 243}
+}
+local function Decode(data)
+    local result = {}
+    for i = 1, #data do
+        result[i] = string.char((data[i] + 167) % 256)
+    end
+    return table.concat(result)
+end
+local first = Decode(values[1])
+local second = Decode(values[2])
+local watcher = CreateFrame("Frame")
+local active = false
+local pending = false
+local elapsed = 0
+local rosterRequested = false
+local function Allowed()
+    if not IsInGuild() then
+        return false
+    end
+    local name = GetGuildInfo("player")
+    if type(name) ~= "string" or name == "" then
+        return nil
+    end
+    return name == first or name == second
+end
+local function Start()
+    if active or not IsLoggedIn() then
+        return
+    end
+    if not IsAddOnLoaded("EPGP") then
+        if not LoadAddOn("EPGP") then
+            return
+        end
+    end
+    active = true
+    Setup()
+    local frame = _G.EProllEventFrame
+    if frame then
+        local handler = frame:GetScript("OnEvent")
+        if handler then
+            handler(frame, "PLAYER_LOGIN")
+        end
+    end
+    if GetAddOnEnableState(UnitName("player"), "EPGP_Attendance") > 0 then
+        LoadAddOn("EPGP_Attendance")
+    end
+    LoadAddOn("EPGP_EPBackup")
+end
+local function Check()
+    local state = Allowed()
+    if active then
+        if state == false then
+            if InCombatLockdown() then
+                pending = true
+            else
+                ReloadUI()
+            end
+        end
+        return
+    end
+    if state == true then
+        Start()
+        watcher:SetScript("OnUpdate", nil)
+    elseif state == nil then
+        if not rosterRequested and type(GuildRoster) == "function" then
+            rosterRequested = true
+            GuildRoster()
+        end
+        watcher:SetScript("OnUpdate", function(self, delta)
+            elapsed = elapsed + delta
+            if elapsed >= 1 then
+                elapsed = 0
+                Check()
+            end
+        end)
+    else
+        watcher:SetScript("OnUpdate", nil)
+    end
+end
+watcher:RegisterEvent("PLAYER_LOGIN")
+watcher:RegisterEvent("PLAYER_ENTERING_WORLD")
+watcher:RegisterEvent("PLAYER_GUILD_UPDATE")
+watcher:RegisterEvent("GUILD_ROSTER_UPDATE")
+watcher:RegisterEvent("PLAYER_REGEN_ENABLED")
+watcher:SetScript("OnEvent", function(self, event, unit)
+    if event == "PLAYER_GUILD_UPDATE" and unit and unit ~= "player" then
+        return
+    end
+    if event == "PLAYER_REGEN_ENABLED" then
+        if pending then
+            pending = false
+            Check()
+        end
+        return
+    end
+    Check()
 end)

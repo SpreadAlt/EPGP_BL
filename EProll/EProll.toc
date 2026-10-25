@@ -3,8 +3,6 @@
 ## Notes: EProll
 ## Author: Altruist
 ## Version: 1.1.9
-## Dependencies: EPGP
 ## SavedVariables: EProllDB
 
 EProll.lua
-Bindings.xml

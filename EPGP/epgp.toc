@@ -1,4 +1,5 @@
 ## Interface: 30300
+## LoadOnDemand: 1
 ## Title: EPGP
 ## Notes: Effort Points/Gear Points Loot System
 ## Author: Alkis Evlogimenos, for sirus fxpw, fallafell, buster

@@ -1,4 +1,5 @@
 ## Interface: 30300
+## LoadOnDemand: 1
 ## X-Curse-Packaged-Version: r1
 ## X-Curse-Project-Name: EPGPAttendance
 ## X-Curse-Project-ID: epgp-attendance
