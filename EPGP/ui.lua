@@ -783,11 +783,11 @@ local function CreateEPGPPersonalLogFrame()
     undo:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -17, 13)
     undo:SetScript(
         "OnClick",
-        function(self, value) EPGP:GetModule("log"):UndoLastAction() end)
+        function(self, value) EPGP:GetModule("log"):UndoLastAction(f.playerName) end)
     undo:SetScript(
         "OnUpdate",
         function(self)
-            if EPGP:GetModule("log"):CanUndo() then
+            if EPGP:GetModule("log"):CanUndo(f.playerName) then
                 self:Enable()
             else
                 self:Disable()
@@ -804,11 +804,11 @@ local function CreateEPGPPersonalLogFrame()
     redo:SetPoint("RIGHT", undo, "LEFT")
     redo:SetScript(
         "OnClick",
-        function(self, value) EPGP:GetModule("log"):RedoLastUndo() end)
+        function(self, value) EPGP:GetModule("log"):RedoLastUndo(f.playerName) end)
     redo:SetScript(
         "OnUpdate",
         function(self)
-            if EPGP:GetModule("log"):CanRedo() then
+            if EPGP:GetModule("log"):CanRedo(f.playerName) then
                 self:Enable()
             else
                 self:Disable()
@@ -2141,7 +2141,7 @@ local function CreateEPGPFrameStandings()
     personalLog:SetPoint("BOTTOMRIGHT", log, "TOPRIGHT", 0, 4)
     personalLog:SetScript("OnClick", function()
         local name
-        if EPGPSideFrame:IsShown() and EPGPSideFrame.name then
+        if EPGPSideFrame.name then
             name = EPGPSideFrame.name
         elseif UnitExists("target") and UnitIsPlayer("target") then
             name = UnitName("target")
@@ -2160,7 +2160,7 @@ local function CreateEPGPFrameStandings()
     epGraph:SetPoint("RIGHT", personalLog, "LEFT", -4, 0)
     epGraph:SetScript("OnClick", function()
         local name
-        if EPGPSideFrame:IsShown() and EPGPSideFrame.name then
+        if EPGPSideFrame.name then
             name = EPGPSideFrame.name
         elseif UnitExists("target") and UnitIsPlayer("target") then
             name = UnitName("target")
@@ -2305,7 +2305,25 @@ local function CreateEPGPFrameStandings()
         standbyText:SetText("Зам")
         standbyText:SetTextColor(1.0, 0.67, 0.23)
         r.check.label = standbyText
-        r.cells[1]:SetWidth(r.cells[1]:GetWidth() - 44)
+        r.raidCheck = CreateFrame("Frame", nil, r)
+        r.raidCheck:SetWidth(36)
+        r.raidCheck:SetHeight(16)
+        r.raidCheck:SetPoint("RIGHT", r.cells[2], "LEFT", -6, 0)
+        r.raidCheck:SetBackdrop({
+            bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            tile = false, edgeSize = 10,
+            insets = { left = 2, right = 2, top = 2, bottom = 2 }
+        })
+        r.raidCheck:SetBackdropColor(0.10, 0.24, 0.18, 0.85)
+        r.raidCheck:SetBackdropBorderColor(0.32, 0.85, 0.56, 0.95)
+        local raidText = r.raidCheck:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        raidText:SetPoint("CENTER", r.raidCheck, "CENTER", 0, 0)
+        raidText:SetText("Рейд")
+        raidText:SetTextColor(0.54, 1.0, 0.67)
+        r.raidCheck.label = raidText
+        r.nameWidth = r.cells[1]:GetWidth() - 44
+        r.cells[1]:SetWidth(r.nameWidth)
         r.cells[2]:ClearAllPoints()
         r.cells[2]:SetPoint("RIGHT", r, "RIGHT", -5, 0)
 
@@ -2316,8 +2334,6 @@ local function CreateEPGPFrameStandings()
                 if IsShiftKeyDown() then
                     if EPGP:IsMemberInExtrasList(self.name) then
                         EPGP:DeSelectMember(self.name)
-                    elseif not UnitInRaid("player") and EPGP:GetMembersInAwardList()[self.name] then
-                        EPGP:DeSelectMember(self.name)
                     else
                         EPGP:SelectMember(self.name)
                     end
@@ -2326,6 +2342,7 @@ local function CreateEPGPFrameStandings()
                         self:LockHighlight()
                         EPGPSideFrame:Hide()
                         EPGPSideFrame.name = self.name
+                        rowFrame.needUpdate = true
                     end
                     ToggleOnlySideFrame(EPGPSideFrame)
                 end
@@ -2375,18 +2392,21 @@ local function CreateEPGPFrameStandings()
             local ep = EPGP:GetEPGP(row.name)
             row.cells[2]:SetText(ep)
             row.check:Hide()
-            if UnitInRaid(row.name) then
-                row.check.label:SetText("Рейд")
-                row.check.label:SetTextColor(0.54, 1.0, 0.67)
-                row.check:SetBackdropColor(0.10, 0.24, 0.18, 0.85)
-                row.check:SetBackdropBorderColor(0.32, 0.85, 0.56, 0.95)
+            row.raidCheck:Hide()
+            local isExtra = EPGP:IsMemberInExtrasList(row.name)
+            local inRaid = UnitInRaid(row.name)
+            row.cells[1]:SetWidth(inRaid and isExtra and row.nameWidth - 40 or row.nameWidth)
+            if isExtra then
                 row.check:Show()
-            elseif EPGP:IsMemberInExtrasList(row.name) then
-                row.check.label:SetText("Зам")
-                row.check.label:SetTextColor(1.0, 0.67, 0.23)
-                row.check:SetBackdropColor(0.28, 0.16, 0.06, 0.85)
-                row.check:SetBackdropBorderColor(1.0, 0.54, 0.18, 0.95)
-                row.check:Show()
+            end
+            if inRaid then
+                row.raidCheck:ClearAllPoints()
+                if isExtra then
+                    row.raidCheck:SetPoint("RIGHT", row.check, "LEFT", -3, 0)
+                else
+                    row.raidCheck:SetPoint("RIGHT", row.cells[2], "LEFT", -6, 0)
+                end
+                row.raidCheck:Show()
             end
             row:SetAlpha(ep < minEP and 0.6 or 1)
             row:Show()
@@ -2407,7 +2427,6 @@ local function CreateEPGPFrameStandings()
     EPGPSideFrame:SetScript(
         "OnHide",
         function(self)
-            self.name = nil
             rowFrame.needUpdate = true
             UpdateStandings()
         end)

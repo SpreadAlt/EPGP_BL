@@ -121,8 +121,14 @@ local function LogRecordToString(record)
     local timestamp, kind, name, reason, amount, officer = unpack(record)
 
     if kind == "EP" then
-        return string.format(L["%s: %+d EP (%s) to %s from $s"],
+        local text = string.format(L["%s: %+d EP (%s) to %s from $s"],
             date("%Y-%m-%d %H:%M", timestamp), amount, reason, name, officer)
+        if amount > 0 then
+            return "|cff55dd77" .. text .. "|r"
+        elseif amount < 0 then
+            return "|cffff5555" .. text .. "|r"
+        end
+        return text
     elseif kind == "GP" then
         return string.format(L["%s: %+d GP (%s) to %s from $s"],
             date("%Y-%m-%d %H:%M", timestamp), amount, reason, name, officer)
@@ -253,38 +259,37 @@ function mod:GetLogRecord(i)
     return LogRecordToString(logs[logsize - i])
 end
 
-function mod:CanUndo()
+function mod:CanUndo(name)
     if not CanEditOfficerNote() or not GS:IsCurrentState() then
         return false
     end
-    return self:GetLastActionForUndo() ~= nil
+    return self:GetLastActionForUndo(name) ~= nil
 end
 
-function mod:GetLastActionForUndo()
+function mod:GetLastActionForUndo(name)
     local skip_count = 0
 
     for i = #self.db.profile.log, 1, -1 do
         local log = self.db.profile.log[i]
+        if not name or log[3] == name then
+            local is_undo = string.starts(log[4], L["Undo"])
+            if not is_undo and skip_count == 0 then
+                return log
+            end
 
-        local is_undo = string.starts(log[4], L["Undo"])
-        if not is_undo and skip_count == 0 then
-            return log
-        end
-
-        if is_undo then
-            skip_count = skip_count + 1
-        else
-            skip_count = skip_count - 1
+            if is_undo then
+                skip_count = skip_count + 1
+            else
+                skip_count = skip_count - 1
+            end
         end
     end
 
     return nil
 end
 
-function mod:UndoLastAction()
-    assert(#self.db.profile.log ~= 0)
-
-    local record = mod:GetLastActionForUndo()
+function mod:UndoLastAction(name)
+    local record = self:GetLastActionForUndo(name)
     if not record then
         return false
     end
@@ -308,21 +313,27 @@ function mod:UndoLastAction()
     return true
 end
 
-function mod:CanRedo()
+function mod:GetLastActionForRedo(name)
+    for i = #self.db.profile.redo, 1, -1 do
+        local record = self.db.profile.redo[i]
+        if type(record) == "table" and (not name or record[3] == name) then
+            return record, i
+        end
+    end
+    return nil
+end
+
+function mod:CanRedo(name)
     if not CanEditOfficerNote() or not GS:IsCurrentState() then
         return false
     end
 
-    return #self.db.profile.redo ~= 0
+    return self:GetLastActionForRedo(name) ~= nil
 end
 
-function mod:RedoLastUndo()
-    if #self.db.profile.redo == 0 then
-        return false
-    end
-
-    local record = self.db.profile.redo[#self.db.profile.redo]
-    if type(record) ~= "table" then
+function mod:RedoLastUndo(name)
+    local record, index = self:GetLastActionForRedo(name)
+    if not record then
         return false
     end
     local timestamp, kind, name, reason, amount, officer = unpack(record)
@@ -337,7 +348,7 @@ function mod:RedoLastUndo()
         return false
     end
 
-    table.remove(self.db.profile.redo)
+    table.remove(self.db.profile.redo, index)
     callbacks:Fire("LogChanged", #self.db.profile.log)
     return true
 end

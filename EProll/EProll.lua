@@ -5,8 +5,9 @@ BINDING_HEADER_EPROLL = "EProll"
 BINDING_NAME_EPROLL_AUCTION_MOUSEOVER = "Объявить предмет под курсором на аукцион"
 
 local ADDON = "EProll"
-local VERSION = "1.1.9"
+local VERSION = "1.3.0"
 local SYNC_PREFIX = "EProll"
+local VERSION_CHECK_PREFIX = "EPRVER1"
 local MIN_BID = 100
 local MIN_STEP = 50
 local AUCTION_VISIBLE_ROWS = 7
@@ -33,6 +34,9 @@ local state = {
     loot = {},
     auctionWindowVisible = false,
     owner = nil,
+    itemBag = nil,
+    itemSlot = nil,
+    bagStartSlots = nil,
 }
 
 local frame = CreateFrame("Frame", "EProllEventFrame", UIParent)
@@ -191,6 +195,327 @@ local function GetEP(name)
         return nil
     end
     return ep
+end
+
+local bagMarks
+local bagSnapshot = {}
+local bagVisuals = {}
+local bagTrackingReady = false
+local bagCharacterKey
+local BAG_MARK_LIFETIME = 119 * 60
+
+local function ItemIdentity(link)
+    if type(link) ~= "string" then return nil end
+    return tonumber(string.match(link, "item:(%d+)"))
+end
+
+local function GetBagCharacterMarks()
+    EnsureDB()
+    EProllDB.wonBagItems = EProllDB.wonBagItems or {}
+    if not bagCharacterKey then
+        bagCharacterKey = (GetRealmName() or "") .. ":" .. (UnitName("player") or "")
+    end
+    if not EProllDB.wonBagItems[bagCharacterKey] then
+        EProllDB.wonBagItems[bagCharacterKey] = {}
+    end
+    bagMarks = EProllDB.wonBagItems[bagCharacterKey]
+    return bagMarks
+end
+
+local function EnumerateBagItems()
+    local items = {}
+    if type(GetContainerNumSlots) ~= "function" or type(GetContainerItemLink) ~= "function" then
+        return items
+    end
+    for bag = 0, (NUM_BAG_SLOTS or 4) do
+        local total = GetContainerNumSlots(bag) or 0
+        for slot = 1, total do
+            local link = GetContainerItemLink(bag, slot)
+            local itemID = ItemIdentity(link)
+            if itemID then
+                items[tostring(bag) .. ":" .. tostring(slot)] = {
+                    bag = bag, slot = slot, itemID = itemID
+                }
+            end
+        end
+    end
+    return items
+end
+
+local function GetMarkedItem(bag, slot)
+    if not bagMarks then return nil end
+    local now = time()
+    for _, mark in ipairs(bagMarks) do
+        if mark.bag == bag and mark.slot == slot
+            and (type(mark.created) ~= "number" or now - mark.created < BAG_MARK_LIFETIME)
+            and ItemIdentity(GetContainerItemLink(bag, slot)) == mark.itemID then
+            return mark
+        end
+    end
+    return nil
+end
+
+local function BagSlotForButton(button)
+    local current = button
+    for _ = 1, 8 do
+        if not current then break end
+        local bag = current.bagID or current.BagID
+        local slot = current.slotID or current.SlotID
+        if type(bag) ~= "number" or type(slot) ~= "number" then
+            if type(current.GetID) == "function" and type(current.GetParent) == "function" then
+                slot = current:GetID()
+                local parent = current:GetParent()
+                bag = parent and type(parent.GetID) == "function" and parent:GetID() or nil
+            end
+        end
+        if type(bag) == "number" and type(slot) == "number" and bag >= 0 and bag <= (NUM_BAG_SLOTS or 4) then
+            if type(GetContainerItemLink) == "function" and GetContainerItemLink(bag, slot) then
+                return bag, slot, current
+            end
+        end
+        current = type(current.GetParent) == "function" and current:GetParent() or nil
+    end
+    return nil
+end
+
+local elvBagHooked
+
+local function GetElvBagModule()
+    local root = _G.ElvUI
+    if type(root) ~= "table" then return nil end
+    local engine = root[1] or root
+    if type(engine) ~= "table" or type(engine.GetModule) ~= "function" then return nil end
+    local ok, module = pcall(engine.GetModule, engine, "Bags", true)
+    if ok and type(module) == "table" then return module end
+    return nil
+end
+
+local function UpdateBagButtonVisual(button)
+    if not button then return end
+    local bag, slot = BagSlotForButton(button)
+    local mark = bag and GetMarkedItem(bag, slot)
+    local visual = bagVisuals[button]
+    if mark then
+        if not visual then
+            visual = CreateFrame("Frame", nil, button)
+            visual:SetAllPoints(button)
+            visual:SetFrameLevel(button:GetFrameLevel() + 4)
+            visual:EnableMouse(false)
+            local sides = {
+                {"TOPLEFT", "TOPRIGHT", 0, -1, 0, -1, true},
+                {"BOTTOMLEFT", "BOTTOMRIGHT", 0, 1, 0, 1, true},
+                {"TOPLEFT", "BOTTOMLEFT", 1, 0, 1, 0, false},
+                {"TOPRIGHT", "BOTTOMRIGHT", -1, 0, -1, 0, false}
+            }
+            for _, side in ipairs(sides) do
+                local edge = visual:CreateTexture(nil, "OVERLAY")
+                edge:SetTexture("Interface\\Buttons\\WHITE8X8")
+                edge:SetVertexColor(0.1, 1, 0.18, 1)
+                edge:SetPoint(side[1], visual, side[1], side[3], side[4])
+                edge:SetPoint(side[2], visual, side[2], side[5], side[6])
+                if side[7] then
+                    edge:SetHeight(3)
+                else
+                    edge:SetWidth(3)
+                end
+            end
+            local tag = visual:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+            tag:SetPoint("CENTER", visual, "CENTER", 0, 0)
+            tag:SetText("EP")
+            tag:SetTextColor(1, 0.1, 0.1)
+            tag:SetShadowColor(0, 0, 0, 1)
+            tag:SetShadowOffset(1, -1)
+            visual.tag = tag
+            bagVisuals[button] = visual
+        end
+        visual:Show()
+    elseif visual then
+        visual:Hide()
+    end
+end
+
+local function RefreshBagVisuals()
+    for frameIndex = 1, (NUM_CONTAINER_FRAMES or 13) do
+        for itemIndex = 1, (MAX_CONTAINER_ITEMS or 36) do
+            local button = _G["ContainerFrame" .. frameIndex .. "Item" .. itemIndex]
+            if button then
+                UpdateBagButtonVisual(button)
+            end
+        end
+    end
+    local module = GetElvBagModule()
+    if module and module.BagFrame and module.BagFrame.Bags then
+        for bag = 0, (NUM_BAG_SLOTS or 4) do
+            local slots = module.BagFrame.Bags[bag]
+            if slots then
+                for slot = 1, (GetContainerNumSlots(bag) or 0) do
+                    UpdateBagButtonVisual(slots[slot])
+                end
+            end
+        end
+    else
+        for bag = 0, (NUM_BAG_SLOTS or 4) do
+            for slot = 1, (GetContainerNumSlots(bag) or 0) do
+                local button = _G["ElvUI_ContainerFrameBag" .. bag .. "Slot" .. slot]
+                if button then
+                    UpdateBagButtonVisual(button)
+                end
+            end
+        end
+    end
+    if module and not elvBagHooked and type(hooksecurefunc) == "function" and type(module.UpdateSlot) == "function" then
+        hooksecurefunc(module, "UpdateSlot", function(self, bagFrame, bag, slot)
+            if bagFrame == self.BagFrame and bagFrame.Bags and bagFrame.Bags[bag] then
+                UpdateBagButtonVisual(bagFrame.Bags[bag][slot])
+            end
+        end)
+        if type(module.Layout) == "function" then
+            hooksecurefunc(module, "Layout", RefreshBagVisuals)
+        end
+        if type(module.OpenBags) == "function" then
+            hooksecurefunc(module, "OpenBags", RefreshBagVisuals)
+        end
+        elvBagHooked = true
+    end
+end
+
+local function RefreshWonBagItems()
+    if not bagTrackingReady then return end
+    local marks = GetBagCharacterMarks()
+    local current = EnumerateBagItems()
+    local occupied = {}
+    local now = time()
+    for i = #marks, 1, -1 do
+        local mark = marks[i]
+        if type(mark) ~= "table" or not mark.itemID or not mark.winner then
+            table.remove(marks, i)
+        elseif ShortName(mark.winner) == ShortName(UnitName("player")) then
+            table.remove(marks, i)
+        elseif type(mark.created) == "number" and now - mark.created >= BAG_MARK_LIFETIME then
+            table.remove(marks, i)
+        elseif mark.bag ~= nil and mark.slot ~= nil then
+            local key = tostring(mark.bag) .. ":" .. tostring(mark.slot)
+            local item = current[key]
+            if item and item.itemID == mark.itemID and not occupied[key] then
+                occupied[key] = true
+                mark.missingSince = nil
+            else
+                mark.bag = nil
+                mark.slot = nil
+                mark.missingSince = mark.missingSince or now
+            end
+        end
+    end
+    for i = #marks, 1, -1 do
+        local mark = marks[i]
+        if mark.bag == nil then
+            local found
+            local firstEligible
+            for key, item in pairs(current) do
+                if item.itemID == mark.itemID and not occupied[key] then
+                    local old = bagSnapshot[key]
+                    if not old or old.itemID ~= item.itemID then
+                        found = item
+                        break
+                    end
+                    if not firstEligible then
+                        firstEligible = item
+                    end
+                end
+            end
+            if not found and mark.bagAtWin ~= nil and mark.slotAtWin ~= nil then
+                local key = tostring(mark.bagAtWin) .. ":" .. tostring(mark.slotAtWin)
+                local item = current[key]
+                if item and item.itemID == mark.itemID and not occupied[key] then
+                    found = item
+                end
+            end
+            if not found and not mark.waitNewItem and not mark.missingSince then
+                found = firstEligible
+            end
+            if found then
+                mark.bag = found.bag
+                mark.slot = found.slot
+                mark.missingSince = nil
+                mark.waitNewItem = nil
+                occupied[tostring(found.bag) .. ":" .. tostring(found.slot)] = true
+            elseif (mark.missingSince and now - mark.missingSince > 45)
+                or (not mark.missingSince and now - (mark.created or now) > 14400) then
+                table.remove(marks, i)
+            end
+        end
+    end
+    bagSnapshot = current
+    RefreshBagVisuals()
+end
+
+local function RecordWonItem(link, winner, amount)
+    if not IsAuctionOwner() then return end
+    if ShortName(winner) == ShortName(UnitName("player")) then return end
+    local itemID = ItemIdentity(link)
+    if not itemID then return end
+    local marks = GetBagCharacterMarks()
+    local mark = {
+        itemID = itemID,
+        winner = winner,
+        amount = amount,
+        created = time(),
+        bagAtWin = state.itemBag,
+        slotAtWin = state.itemSlot,
+        waitNewItem = state.itemBag == nil
+    }
+    if state.itemBag == nil then
+        local current = EnumerateBagItems()
+        local atStart = state.bagStartSlots or {}
+        for key, item in pairs(current) do
+            local old = atStart[key]
+            if item.itemID == itemID and (not old or old.itemID ~= itemID) then
+                mark.bagAtWin = item.bag
+                mark.slotAtWin = item.slot
+                break
+            end
+        end
+    end
+    table.insert(marks, mark)
+    RefreshWonBagItems()
+end
+
+local function AddWinnerTooltip(tooltip, mark)
+    if not mark then return end
+    local text = "Отдать - " .. tostring(mark.winner)
+    local name = tooltip:GetName()
+    if name then
+        for i = 1, tooltip:NumLines() do
+            local line = _G[name .. "TextLeft" .. i]
+            if line and line:GetText() == text then
+                return
+            end
+        end
+    end
+    tooltip:AddLine(text, 1, 0.2, 0.2)
+    tooltip:Show()
+end
+
+local function InstallBagTracking()
+    if bagTrackingReady then return end
+    GetBagCharacterMarks()
+    bagTrackingReady = true
+    bagSnapshot = EnumerateBagItems()
+    if GameTooltip and type(GameTooltip.HookScript) == "function" then
+        GameTooltip:HookScript("OnTooltipSetItem", function(self)
+            local bag, slot = BagSlotForButton(self:GetOwner())
+            AddWinnerTooltip(self, bag and GetMarkedItem(bag, slot))
+        end)
+    end
+    if GameTooltip and type(hooksecurefunc) == "function" and type(GameTooltip.SetBagItem) == "function" then
+        hooksecurefunc(GameTooltip, "SetBagItem", function(self, bag, slot)
+            AddWinnerTooltip(self, GetMarkedItem(bag, slot))
+        end)
+    end
+    if type(hooksecurefunc) == "function" and type(ContainerFrame_Update) == "function" then
+        hooksecurefunc("ContainerFrame_Update", RefreshBagVisuals)
+    end
+    RefreshWonBagItems()
 end
 
 local function IsBidExcluded(name, sequence)
@@ -627,6 +952,9 @@ local function EndAuctionLocal()
     state.itemLink = nil
     state.itemTexture = nil
     state.owner = nil
+    state.itemBag = nil
+    state.itemSlot = nil
+    state.bagStartSlots = nil
     wipe(state.bids)
     wipe(state.bidSequence)
     wipe(state.bidOff)
@@ -647,7 +975,7 @@ local function EndAuctionLocal()
     RefreshAuctionFrame()
 end
 
-local function StartAuction(itemLink, texture)
+local function StartAuction(itemLink, texture, bag, slot)
     if not itemLink then
         Notify("Не удалось получить ссылку на предмет.")
         return
@@ -667,6 +995,9 @@ local function StartAuction(itemLink, texture)
     state.itemLink = itemLink
     state.itemTexture = texture or GetItemTexture(itemLink)
     state.owner = UnitName("player")
+    state.itemBag = bag
+    state.itemSlot = slot
+    state.bagStartSlots = EnumerateBagItems()
     state.auctionWindowVisible = true
     wipe(state.bids)
     wipe(state.bidSequence)
@@ -863,6 +1194,7 @@ local function AnnounceWinner()
 
     local msg = string.format("EProll: %s отдан %s, за %d EP", state.itemLink, winner, amount)
     SendAddonChat(msg, "GUILD")
+    RecordWonItem(state.itemLink, winner, amount)
     SendSync("E")
 
     EndAuctionLocal()
@@ -947,6 +1279,7 @@ local function DeductManualEP()
 
     local msg = string.format("EProll: %s отдан %s, за %d EP", state.itemLink, winner, amount)
     SendAddonChat(msg, "GUILD")
+    RecordWonItem(state.itemLink, winner, amount)
     SendSync("E")
 
     EndAuctionLocal()
@@ -1693,17 +2026,9 @@ local function ScanLoot()
 end
 
 local function LinkFromContainerButton(button)
-    if not button or type(button.GetID) ~= "function" then return nil end
-
-    local slot = button:GetID()
-    local parent = type(button.GetParent) == "function" and button:GetParent() or nil
-    local bag = parent and type(parent.GetID) == "function" and parent:GetID() or nil
-
-    if type(slot) ~= "number" or type(bag) ~= "number" then
-        return nil
-    end
-
-    return GetContainerItemLink(bag, slot)
+    local bag, slot = BagSlotForButton(button)
+    if not bag then return nil end
+    return GetContainerItemLink(bag, slot), bag, slot
 end
 
 local function GetMouseoverItemLink()
@@ -1712,9 +2037,9 @@ local function GetMouseoverItemLink()
     for _ = 1, 8 do
         if not current then break end
 
-        local link = LinkFromContainerButton(current)
+        local link, bag, slot = LinkFromContainerButton(current)
         if link then
-            return link
+            return link, bag, slot
         end
 
         current = type(current.GetParent) == "function" and current:GetParent() or nil
@@ -1727,9 +2052,9 @@ local function GetMouseoverItemLink()
             for itemIndex = 1, maxItems do
                 local button = _G["ContainerFrame" .. frameIndex .. "Item" .. itemIndex]
                 if button and button:IsShown() and MouseIsOver(button) then
-                    local link = LinkFromContainerButton(button)
+                    local link, bag, slot = LinkFromContainerButton(button)
                     if link then
-                        return link
+                        return link, bag, slot
                     end
                 end
             end
@@ -1763,6 +2088,9 @@ local function HandleSyncMessage(message, sender)
 
         state.active = true
         state.itemLink = link
+        state.itemBag = nil
+        state.itemSlot = nil
+        state.bagStartSlots = nil
         state.itemTexture = GetItemTexture(link)
         state.owner = sender
         state.auctionWindowVisible = true
@@ -1899,12 +2227,240 @@ function EProll_AuctionMouseover()
         return
     end
 
-    local link = GetMouseoverItemLink()
+    local link, bag, slot = GetMouseoverItemLink()
     if not link then
         Notify("Наведите курсор на предмет в сумке и нажмите назначенную клавишу.")
         return
     end
-    StartAuction(link, GetItemTexture(link))
+    StartAuction(link, GetItemTexture(link), bag, slot)
+end
+
+local guildVersionsFrame
+local guildVersionsRows = {}
+local guildVersionsResults = {}
+local guildVersionsRequest = nil
+local guildVersionsSeq = 0
+local guildVersionsDeadline = nil
+local guildVersionsStatus
+local guildVersionsScroll
+local guildVersionsScrollChild
+local guildVersionsRowFrames = {}
+local guildVersionsActive = false
+
+local function GuildVersionShortName(name)
+    if type(name) ~= "string" then return "" end
+    return string.match(name, "^[^-]+") or name
+end
+
+local function GuildVersionClean(value)
+    if type(value) ~= "string" and type(value) ~= "number" then return "-" end
+    value = tostring(value)
+    value = string.gsub(value, "[%c|]", "")
+    if value == "" then return "-" end
+    return string.sub(value, 1, 35)
+end
+
+local function GuildVersionLocal(addonName)
+    if not IsAddOnLoaded(addonName) then return "-" end
+    local version
+    if addonName == "DBM-Core" and type(DBM) == "table" then
+        version = DBM.DisplayVersion or DBM.Version
+    elseif addonName == "WeakAuras" and type(WeakAuras) == "table" then
+        version = WeakAuras.versionString
+    end
+    if not version and type(GetAddOnMetadata) == "function" then
+        version = GetAddOnMetadata(addonName, "Version")
+    end
+    return GuildVersionClean(version)
+end
+
+local function GuildVersionBuildRoster()
+    guildVersionsRows = {}
+    local seen = {}
+    if IsInGuild() then
+        for i = 1, GetNumGuildMembers(true) do
+            local name, _, _, _, _, _, _, _, online = GetGuildRosterInfo(i)
+            if type(name) == "string" and name ~= "" then
+                local short = GuildVersionShortName(name)
+                if not seen[short] then
+                    seen[short] = true
+                    table.insert(guildVersionsRows, {name = short, online = online and true or false})
+                end
+            end
+        end
+    end
+    local myName = GuildVersionShortName(UnitName("player"))
+    if myName ~= "" and not seen[myName] then
+        table.insert(guildVersionsRows, {name = myName, online = true})
+    end
+    table.sort(guildVersionsRows, function(a, b)
+        if a.online ~= b.online then return a.online end
+        return string.lower(a.name) < string.lower(b.name)
+    end)
+end
+
+local function GuildVersionText(value, online, replied, expired)
+    if not online then return "|cff777777Не в сети|r" end
+    if not replied then
+        if expired then return "|cffff7777Нет ответа|r" end
+        return "|cffffff77Ожидание|r"
+    end
+    if value == "-" then return "|cffff8888Нет|r" end
+    return "|cff77dd99" .. GuildVersionClean(value) .. "|r"
+end
+
+local function GuildVersionCreateRow(i)
+    local row = CreateFrame("Frame", nil, guildVersionsScrollChild)
+    row:SetWidth(568)
+    row:SetHeight(22)
+    row:SetPoint("TOPLEFT", guildVersionsScrollChild, "TOPLEFT", 0, -(i - 1) * 22)
+    local bg = row:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints(row)
+    if i % 2 == 0 then
+        bg:SetTexture(0.18, 0.18, 0.18, 0.35)
+    else
+        bg:SetTexture(0.10, 0.10, 0.10, 0.20)
+    end
+    row.cells = {}
+    local coords = {{0, 178}, {184, 108}, {296, 125}, {425, 124}}
+    for j = 1, 4 do
+        local txt = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        txt:SetPoint("LEFT", row, "LEFT", coords[j][1] + 4, 0)
+        txt:SetWidth(coords[j][2])
+        txt:SetHeight(19)
+        txt:SetJustifyH("LEFT")
+        row.cells[j] = txt
+    end
+    guildVersionsRowFrames[i] = row
+    return row
+end
+
+local function GuildVersionDraw()
+    if not guildVersionsFrame or not guildVersionsFrame:IsShown() then return end
+    local totalOnline, answered = 0, 0
+    local expired = not guildVersionsDeadline or GetTime() >= guildVersionsDeadline
+    for i, member in ipairs(guildVersionsRows) do
+        local row = guildVersionsRowFrames[i] or GuildVersionCreateRow(i)
+        row:Show()
+        local record = guildVersionsResults[member.name]
+        if member.online then totalOnline = totalOnline + 1 end
+        if member.online and record then answered = answered + 1 end
+        row.cells[1]:SetText((member.online and "|cffffffff" or "|cff888888") .. member.name .. "|r")
+        row.cells[2]:SetText(GuildVersionText(record and record.dbm, member.online, record ~= nil, expired))
+        row.cells[3]:SetText(GuildVersionText(record and record.wa, member.online, record ~= nil, expired))
+        row.cells[4]:SetText(GuildVersionText(record and record.epgp, member.online, record ~= nil, expired))
+    end
+    for i = #guildVersionsRows + 1, #guildVersionsRowFrames do
+        guildVersionsRowFrames[i]:Hide()
+    end
+    guildVersionsScrollChild:SetHeight(math.max(1, #guildVersionsRows * 22))
+    guildVersionsStatus:SetText(string.format("Всего: %d   Онлайн: %d   Ответили: %d", #guildVersionsRows, totalOnline, answered))
+end
+
+local function GuildVersionRequest()
+    if not IsInGuild() then return end
+    GuildVersionBuildRoster()
+    guildVersionsSeq = guildVersionsSeq + 1
+    guildVersionsRequest = tostring(math.floor(GetTime() * 1000)) .. "-" .. tostring(guildVersionsSeq)
+    guildVersionsDeadline = GetTime() + 10
+    guildVersionsActive = true
+    guildVersionsResults = {}
+    local myName = GuildVersionShortName(UnitName("player"))
+    if myName ~= "" then
+        guildVersionsResults[myName] = {
+            dbm = GuildVersionLocal("DBM-Core"),
+            wa = GuildVersionLocal("WeakAuras"),
+            epgp = GuildVersionLocal("EPGP")
+        }
+    end
+    GuildVersionDraw()
+    if type(GuildRoster) == "function" then GuildRoster() end
+    if type(SendAddonMessage) == "function" then
+        SendAddonMessage(VERSION_CHECK_PREFIX, "Q\t" .. guildVersionsRequest, "GUILD")
+    end
+end
+
+local function GuildVersionHandleResponse(message, channel, sender)
+    if channel ~= "WHISPER" or not guildVersionsActive or not guildVersionsRequest or not guildVersionsFrame or not guildVersionsFrame:IsShown() then return end
+    local request, dbm, wa, epgp = string.match(message, "^R\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)$")
+    if request ~= guildVersionsRequest then return end
+    if guildVersionsDeadline and GetTime() > guildVersionsDeadline then return end
+    local name = GuildVersionShortName(sender)
+    if not IsInGuild() then return end
+    guildVersionsResults[name] = {
+        dbm = GuildVersionClean(dbm),
+        wa = GuildVersionClean(wa),
+        epgp = GuildVersionClean(epgp)
+    }
+    GuildVersionDraw()
+end
+
+local function GuildVersionCreateFrame()
+    if guildVersionsFrame then return end
+    local f = CreateFrame("Frame", "EProllGuildVersionsFrame", UIParent)
+    guildVersionsFrame = f
+    f:SetWidth(640)
+    f:SetHeight(492)
+    f:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+    f:SetFrameStrata("DIALOG")
+    f:SetClampedToScreen(true)
+    f:EnableMouse(true)
+    f:SetMovable(true)
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", function(self) self:StartMoving() end)
+    f:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+    f:SetBackdrop({
+        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+        tile = true, tileSize = 32, edgeSize = 32,
+        insets = {left = 12, right = 12, top = 12, bottom = 12}
+    })
+    f:SetBackdropColor(0, 0, 0, 0.97)
+    local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", f, "TOPLEFT", 24, -20)
+    title:SetText("Версии дополнений гильдии")
+    local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+    close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -4, -4)
+    local refresh = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    refresh:SetWidth(115)
+    refresh:SetHeight(24)
+    refresh:SetPoint("TOPRIGHT", f, "TOPRIGHT", -43, -43)
+    refresh:SetText("Обновить")
+    refresh:SetScript("OnClick", GuildVersionRequest)
+    guildVersionsStatus = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    guildVersionsStatus:SetPoint("TOPLEFT", f, "TOPLEFT", 26, -48)
+    guildVersionsStatus:SetWidth(420)
+    guildVersionsStatus:SetJustifyH("LEFT")
+    local headers = {{"Игрок", 30}, {"DBM", 214}, {"WeakAuras", 326}, {"EPGP", 455}}
+    for _, header in ipairs(headers) do
+        local txt = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        txt:SetPoint("TOPLEFT", f, "TOPLEFT", header[2], -88)
+        txt:SetText(header[1])
+    end
+    local scroll = CreateFrame("ScrollFrame", nil, f, "UIPanelScrollFrameTemplate")
+    guildVersionsScroll = scroll
+    scroll:SetPoint("TOPLEFT", f, "TOPLEFT", 26, -111)
+    scroll:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -45, 39)
+    guildVersionsScrollChild = CreateFrame("Frame", nil, scroll)
+    guildVersionsScrollChild:SetWidth(568)
+    guildVersionsScrollChild:SetHeight(1)
+    scroll:SetScrollChild(guildVersionsScrollChild)
+    f:SetScript("OnUpdate", function(self)
+        if guildVersionsDeadline and GetTime() >= guildVersionsDeadline then
+            guildVersionsDeadline = nil
+            guildVersionsActive = false
+            GuildVersionDraw()
+        end
+    end)
+    f:Hide()
+end
+
+_G.EProll_ShowGuildVersions = function()
+    GuildVersionCreateFrame()
+    if not guildVersionsFrame:IsShown() then
+        guildVersionsFrame:Show()
+    end
+    GuildVersionRequest()
 end
 
 local function CreateOptionsPanel()
@@ -2032,6 +2588,17 @@ frame:RegisterEvent("CHAT_MSG_RAID_LEADER")
 frame:RegisterEvent("CHAT_MSG_SAY")
 frame:RegisterEvent("CHAT_MSG_ADDON")
 frame:RegisterEvent("PARTY_LOOT_METHOD_CHANGED")
+frame:RegisterEvent("BAG_UPDATE")
+frame:RegisterEvent("GUILD_ROSTER_UPDATE")
+
+frame:SetScript("OnUpdate", function(self, elapsed)
+    if not bagTrackingReady or not bagMarks or #bagMarks == 0 then return end
+    self.bagMarkElapsed = (self.bagMarkElapsed or 0) + elapsed
+    if self.bagMarkElapsed >= 5 then
+        self.bagMarkElapsed = 0
+        RefreshWonBagItems()
+    end
+end)
 
 frame:SetScript("OnEvent", function(self, event, ...)
     if event == "ADDON_LOADED" then
@@ -2051,8 +2618,10 @@ frame:SetScript("OnEvent", function(self, event, ...)
         CreateLogFrame()
         CreateLootFrame()
         CreateOptionsPanel()
+        InstallBagTracking()
         if type(_G.RegisterAddonMessagePrefix) == "function" then
             _G.RegisterAddonMessagePrefix(SYNC_PREFIX)
+            _G.RegisterAddonMessagePrefix(VERSION_CHECK_PREFIX)
         end
         if type(_G.GuildRoster) == "function" then
             _G.GuildRoster()
@@ -2060,6 +2629,19 @@ frame:SetScript("OnEvent", function(self, event, ...)
         if not EPGP then
             Notify("Не найден EPGP. Проверьте, что EPGP включён.")
         end
+        return
+    end
+
+    if event == "GUILD_ROSTER_UPDATE" then
+        if guildVersionsFrame and guildVersionsFrame:IsShown() then
+            GuildVersionBuildRoster()
+            GuildVersionDraw()
+        end
+        return
+    end
+
+    if event == "BAG_UPDATE" then
+        RefreshWonBagItems()
         return
     end
 
@@ -2075,6 +2657,10 @@ frame:SetScript("OnEvent", function(self, event, ...)
 
     if event == "CHAT_MSG_ADDON" then
         local prefix, message, channel, sender = ...
+        if prefix == VERSION_CHECK_PREFIX then
+            GuildVersionHandleResponse(message, channel, sender)
+            return
+        end
         if prefix == SYNC_PREFIX and channel == "RAID" then
             HandleSyncMessage(message, sender)
         end

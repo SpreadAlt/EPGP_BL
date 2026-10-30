@@ -350,6 +350,11 @@ local function RefreshStandings(order, showEveryone)
     for n in pairs(ep_data) do
       table.insert(standings, n)
     end
+    for n in pairs(main_data) do
+      if selected[n] or UnitInParty(n) or n == UnitName("player") then
+        table.insert(standings, n)
+      end
+    end
   end
 
   -- Sort
@@ -581,11 +586,9 @@ function EPGP:GetAlt(name, i)
 end
 
 function EPGP:SelectMember(name)
-  if UnitInRaid("player") then
-    -- Only allow selecting members that are not in raid when in raid.
-    if UnitInRaid(name) then
-      return false
-    end
+  -- Only allow selecting members that are not in raid when in raid.
+  if not name or selected[name] then
+    return false
   end
   selected[name] = true
   selected._count = selected._count + 1
@@ -594,12 +597,7 @@ function EPGP:SelectMember(name)
 end
 
 function EPGP:DeSelectMember(name)
-  if UnitInRaid("player") then
-    -- Only allow deselecting members that are not in raid when in raid.
-    if UnitInRaid(name) then
-      return false
-    end
-  end
+  -- Only allow deselecting members that are not in raid when in raid.
   if not selected[name] then
     return false
   end
@@ -610,15 +608,25 @@ function EPGP:DeSelectMember(name)
 end
 
 function EPGP:GetNumMembersInAwardList()
-  if UnitInRaid("player") then
-    return GetNumRaidMembers() + selected._count
-  else
-    if selected._count == 0 then
-      return self:GetNumMembers()
-    else
-      return selected._count
+  if not self:CanMassAwardEP() then
+    return 0
+  end
+  local count = 0
+  local included = {}
+  for i=1,self:GetNumMembers() do
+    local name = self:GetMember(i)
+    if self:IsMemberInAwardList(name) or
+       (not UnitInRaid("player") and GetNumPartyMembers() > 0 and
+        (name == UnitName("player") or UnitInParty(name))) then
+      local ep, gp, main = self:GetEPGP(name)
+      local member = main or name
+      if ep and not included[member] then
+        included[member] = true
+        count = count + 1
+      end
     end
   end
+  return count
 end
 function EPGP:GetMembersInAwardList()
   return selected
@@ -900,6 +908,17 @@ function EPGP:IncMassEPBy(reason, amount)
   local extras_awarded = {}
   local extras_amount = math.floor(global_config.extras_p * 0.01 * amount)
   local extras_reason = "Замена: " .. reason
+  local extras_mains = {}
+  local processed = {}
+
+  for name, is_selected in pairs(selected) do
+    if is_selected and name ~= "_count" then
+      local ep, gp, main = EPGP:GetEPGP(name)
+      if ep then
+        extras_mains[main or name] = true
+      end
+    end
+  end
 
   for i=1,EPGP:GetNumMembers() do
     local name = EPGP:GetMember(i)
@@ -913,13 +932,19 @@ function EPGP:IncMassEPBy(reason, amount)
       -- EPGP:GetEPGP() returns nil for ep and gp, if it can't find a
       -- valid member based on the name however.
       local ep, gp, main = EPGP:GetEPGP(name)
-      local main = main or name
-      if ep and not awarded[main] and not extras_awarded[main] then
-        if EPGP:IsMemberInExtrasList(name) then
-          extras_awarded[EPGP:IncEPBy(name, extras_reason,
-                                      extras_amount, true)] = true
+      local member = main or name
+      if ep and not processed[member] then
+        processed[member] = true
+        if extras_mains[member] then
+          local recipient = EPGP:IncEPBy(name, extras_reason, extras_amount, true)
+          if recipient then
+            extras_awarded[recipient] = true
+          end
         else
-          awarded[EPGP:IncEPBy(name, reason, amount, true)] = true
+          local recipient = EPGP:IncEPBy(name, reason, amount, true)
+          if recipient then
+            awarded[recipient] = true
+          end
         end
       end
     end
@@ -1034,25 +1059,14 @@ function EPGP:OnInitialize()
 end
 
 function EPGP:RAID_ROSTER_UPDATE()
-  if UnitInRaid("player") then
-    -- If we are in a raid, make sure no member of the raid is
-    -- selected
-    for name,_ in pairs(selected) do
-      if UnitInRaid(name) then
-        selected[name] = nil
-        selected._count = selected._count - 1
-      end
-    end
-  else
-    -- If we are not in a raid, this means we just left so remove
-    -- everyone from the selected list.
-    wipe(selected)
-    selected._count = 0
-    -- We also need to stop any recurring EP since they should stop
-    -- once a raid stops.
-    if self:RunningRecurringEP() then
-      self:StopRecurringEP()
-    end
+  -- If we are in a raid, make sure no member of the raid is
+  -- selected
+  -- If we are not in a raid, this means we just left so remove
+  -- everyone from the selected list.
+  -- We also need to stop any recurring EP since they should stop
+  -- once a raid stops.
+  if not UnitInRaid("player") and self:RunningRecurringEP() then
+    self:StopRecurringEP()
   end
   DestroyStandings()
 end
