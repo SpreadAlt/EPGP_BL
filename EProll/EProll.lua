@@ -203,6 +203,8 @@ local bagVisuals = {}
 local bagTrackingReady = false
 local bagCharacterKey
 local BAG_MARK_LIFETIME = 119 * 60
+local tradeState
+local recentTrade
 
 local function ItemIdentity(link)
     if type(link) ~= "string" then return nil end
@@ -240,6 +242,10 @@ local function EnumerateBagItems()
         end
     end
     return items
+end
+
+local function TradePartnerMatches(name)
+    return tradeState and tradeState.partner and ShortName(tradeState.partner) == ShortName(name)
 end
 
 local function GetMarkedItem(bag, slot)
@@ -290,6 +296,36 @@ local function GetElvBagModule()
     return nil
 end
 
+local function GetBagButtonGlowLibrary()
+    if not LibStub then return nil end
+    local glow = LibStub("LibCustomGlow-1.0", true)
+    if glow and type(glow.ButtonGlow_Start) == "function" and type(glow.ButtonGlow_Stop) == "function" then
+        return glow
+    end
+    return nil
+end
+
+local function UpdateTradeButtonGlow(visual, enabled)
+    if not visual then return end
+    if not enabled then
+        if visual.tradeGlowActive then
+            local glow = visual.tradeGlowLibrary or GetBagButtonGlowLibrary()
+            if glow then glow.ButtonGlow_Stop(visual) end
+            visual.tradeGlowActive = nil
+            visual.tradeGlowLibrary = nil
+        end
+        return
+    end
+    if visual.tradeGlowActive then return end
+    local glow = GetBagButtonGlowLibrary()
+    if glow then
+        visual:Show()
+        glow.ButtonGlow_Start(visual, {1, 0.85, 0.05, 1}, 0.125)
+        visual.tradeGlowLibrary = glow
+        visual.tradeGlowActive = true
+    end
+end
+
 local function UpdateBagButtonVisual(button)
     if not button then return end
     local bag, slot = BagSlotForButton(button)
@@ -326,10 +362,15 @@ local function UpdateBagButtonVisual(button)
             tag:SetShadowColor(0, 0, 0, 1)
             tag:SetShadowOffset(1, -1)
             visual.tag = tag
+            visual:SetScript("OnHide", function(self)
+                UpdateTradeButtonGlow(self, false)
+            end)
             bagVisuals[button] = visual
         end
         visual:Show()
+        UpdateTradeButtonGlow(visual, TradePartnerMatches(mark.winner))
     elseif visual then
+        UpdateTradeButtonGlow(visual, false)
         visual:Hide()
     end
 end
@@ -393,7 +434,10 @@ local function RefreshWonBagItems()
             table.remove(marks, i)
         elseif type(mark.created) == "number" and now - mark.created >= BAG_MARK_LIFETIME then
             table.remove(marks, i)
-        elseif mark.bag ~= nil and mark.slot ~= nil then
+        end
+    end
+    for _, mark in ipairs(marks) do
+        if mark.bag ~= nil and mark.slot ~= nil then
             local key = tostring(mark.bag) .. ":" .. tostring(mark.slot)
             local item = current[key]
             if item and item.itemID == mark.itemID and not occupied[key] then
@@ -406,43 +450,52 @@ local function RefreshWonBagItems()
             end
         end
     end
-    for i = #marks, 1, -1 do
-        local mark = marks[i]
-        if mark.bag == nil then
-            local found
-            local firstEligible
-            for key, item in pairs(current) do
-                if item.itemID == mark.itemID and not occupied[key] then
-                    local old = bagSnapshot[key]
-                    if not old or old.itemID ~= item.itemID then
-                        found = item
-                        break
-                    end
-                    if not firstEligible then
-                        firstEligible = item
-                    end
-                end
-            end
-            if not found and mark.bagAtWin ~= nil and mark.slotAtWin ~= nil then
-                local key = tostring(mark.bagAtWin) .. ":" .. tostring(mark.slotAtWin)
+    local function FreeSlot(mark, preferFresh)
+        for bag = 0, (NUM_BAG_SLOTS or 4) do
+            local count = GetContainerNumSlots(bag) or 0
+            for slot = 1, count do
+                local key = tostring(bag) .. ":" .. tostring(slot)
                 local item = current[key]
                 if item and item.itemID == mark.itemID and not occupied[key] then
-                    found = item
+                    local old = bagSnapshot[key]
+                    if not preferFresh or not old or old.itemID ~= item.itemID then
+                        return item, key
+                    end
                 end
             end
-            if not found and not mark.waitNewItem and not mark.missingSince then
-                found = firstEligible
+        end
+        return nil
+    end
+    for _, mark in ipairs(marks) do
+        if mark.bag == nil then
+            local found, key
+            if mark.bagAtWin ~= nil and mark.slotAtWin ~= nil then
+                local origin = tostring(mark.bagAtWin) .. ":" .. tostring(mark.slotAtWin)
+                if current[origin] and current[origin].itemID == mark.itemID and not occupied[origin] then
+                    found, key = current[origin], origin
+                end
+            end
+            if not found then
+                found, key = FreeSlot(mark, true)
+            end
+            if not found and not mark.waitNewItem then
+                found, key = FreeSlot(mark, false)
             end
             if found then
                 mark.bag = found.bag
                 mark.slot = found.slot
                 mark.missingSince = nil
                 mark.waitNewItem = nil
-                occupied[tostring(found.bag) .. ":" .. tostring(found.slot)] = true
+                occupied[key] = true
             elseif (mark.missingSince and now - mark.missingSince > 45)
                 or (not mark.missingSince and now - (mark.created or now) > 14400) then
-                table.remove(marks, i)
+                mark.expiredMissing = true
             end
+        end
+    end
+    for i = #marks, 1, -1 do
+        if marks[i].expiredMissing then
+            table.remove(marks, i)
         end
     end
     bagSnapshot = current
@@ -454,6 +507,7 @@ local function RecordWonItem(link, winner, amount)
     if ShortName(winner) == ShortName(UnitName("player")) then return end
     local itemID = ItemIdentity(link)
     if not itemID then return end
+    RefreshWonBagItems()
     local marks = GetBagCharacterMarks()
     local mark = {
         itemID = itemID,
@@ -467,17 +521,141 @@ local function RecordWonItem(link, winner, amount)
     if state.itemBag == nil then
         local current = EnumerateBagItems()
         local atStart = state.bagStartSlots or {}
-        for key, item in pairs(current) do
-            local old = atStart[key]
-            if item.itemID == itemID and (not old or old.itemID ~= itemID) then
-                mark.bagAtWin = item.bag
-                mark.slotAtWin = item.slot
-                break
+        local occupied = {}
+        for _, previous in ipairs(marks) do
+            if previous.bag ~= nil and previous.slot ~= nil then
+                occupied[tostring(previous.bag) .. ":" .. tostring(previous.slot)] = true
             end
+        end
+        local candidate
+        for bag = 0, (NUM_BAG_SLOTS or 4) do
+            for slot = 1, (GetContainerNumSlots(bag) or 0) do
+                local key = tostring(bag) .. ":" .. tostring(slot)
+                local item = current[key]
+                if item and item.itemID == itemID and not occupied[key] then
+                    local old = atStart[key]
+                    if not old or old.itemID ~= itemID then
+                        candidate = item
+                        break
+                    end
+                    if not candidate then
+                        candidate = item
+                    end
+                end
+            end
+            if candidate then break end
+        end
+        if candidate then
+            mark.bagAtWin = candidate.bag
+            mark.slotAtWin = candidate.slot
+            mark.waitNewItem = false
         end
     end
     table.insert(marks, mark)
     RefreshWonBagItems()
+end
+
+local function TradePartnerName()
+    local name = UnitName("NPC")
+    if not name and _G.TradeFrameRecipientNameText then
+        name = _G.TradeFrameRecipientNameText:GetText()
+    end
+    return name
+end
+
+local function CaptureTradeOffer()
+    if not tradeState or type(GetTradePlayerItemLink) ~= "function" then return end
+    local offered = {}
+    for slot = 1, (MAX_TRADABLE_ITEMS or 6) do
+        local link = GetTradePlayerItemLink(slot)
+        local itemID = ItemIdentity(link)
+        if itemID then
+            local quantity = 1
+            if type(GetTradePlayerItemInfo) == "function" then
+                local _, _, amount = GetTradePlayerItemInfo(slot)
+                if type(amount) == "number" and amount > 0 then
+                    quantity = amount
+                end
+            end
+            offered[itemID] = (offered[itemID] or 0) + quantity
+        end
+    end
+    tradeState.offered = offered
+end
+
+local function CompleteMarkedTrade(info)
+    if not info or not info.partner or info.completed then return end
+    info.completed = true
+    local marks = GetBagCharacterMarks()
+    for itemID, count in pairs(info.offered or {}) do
+        local remaining = count
+        for i = #marks, 1, -1 do
+            local mark = marks[i]
+            if remaining <= 0 then break end
+            if mark.itemID == itemID and ShortName(mark.winner) == ShortName(info.partner) then
+                table.remove(marks, i)
+                remaining = remaining - 1
+            end
+        end
+    end
+    RefreshWonBagItems()
+end
+
+local function IsTradeCompleteMessage(...)
+    local code = _G.ERR_TRADE_COMPLETE
+    for i = 1, select("#", ...) do
+        local value = select(i, ...)
+        if value == "ERR_TRADE_COMPLETE" or (code and value == code) then
+            return true
+        end
+    end
+    return false
+end
+
+local function CountBagItemCopies()
+    local counts = {}
+    for bag = 0, (NUM_BAG_SLOTS or 4) do
+        for slot = 1, (GetContainerNumSlots(bag) or 0) do
+            local itemID = ItemIdentity(GetContainerItemLink(bag, slot))
+            if itemID then
+                local quantity = 1
+                if type(GetContainerItemInfo) == "function" then
+                    local _, count = GetContainerItemInfo(bag, slot)
+                    if type(count) == "number" and count > 0 then
+                        quantity = count
+                    end
+                end
+                counts[itemID] = (counts[itemID] or 0) + quantity
+            end
+        end
+    end
+    return counts
+end
+
+local function BeginMarkedTrade()
+    RefreshWonBagItems()
+    tradeState = { partner = TradePartnerName(), offered = {}, started = GetTime(), before = CountBagItemCopies() }
+    recentTrade = nil
+    CaptureTradeOffer()
+    RefreshBagVisuals()
+end
+
+local function UpdateMarkedTrade()
+    if not tradeState then return end
+    tradeState.partner = tradeState.partner or TradePartnerName()
+    CaptureTradeOffer()
+    RefreshBagVisuals()
+end
+
+local function EndMarkedTrade()
+    if not tradeState then return end
+    if not next(tradeState.offered or {}) and tradeState.acceptedOffer then
+        tradeState.offered = tradeState.acceptedOffer
+    end
+    recentTrade = tradeState
+    recentTrade.closedAt = GetTime()
+    tradeState = nil
+    RefreshBagVisuals()
 end
 
 local function AddWinnerTooltip(tooltip, mark)
@@ -2580,6 +2758,12 @@ SlashCmdList["EPROLLWINDOW"] = function(msg)
     RefreshAuctionFrame()
 end
 
+SLASH_EPROLLVERSIONS1 = "/epver"
+
+SlashCmdList["EPROLLVERSIONS"] = function()
+    EProll_ShowGuildVersions()
+end
+
 frame:RegisterEvent("ADDON_LOADED")
 frame:RegisterEvent("PLAYER_LOGIN")
 frame:RegisterEvent("LOOT_OPENED")
@@ -2590,8 +2774,33 @@ frame:RegisterEvent("CHAT_MSG_ADDON")
 frame:RegisterEvent("PARTY_LOOT_METHOD_CHANGED")
 frame:RegisterEvent("BAG_UPDATE")
 frame:RegisterEvent("GUILD_ROSTER_UPDATE")
+frame:RegisterEvent("TRADE_SHOW")
+frame:RegisterEvent("TRADE_UPDATE")
+frame:RegisterEvent("TRADE_PLAYER_ITEM_CHANGED")
+frame:RegisterEvent("TRADE_ACCEPT_UPDATE")
+frame:RegisterEvent("TRADE_CLOSED")
+frame:RegisterEvent("UI_INFO_MESSAGE")
 
 frame:SetScript("OnUpdate", function(self, elapsed)
+    if recentTrade and not recentTrade.completed and recentTrade.accepted
+        and GetTime() - recentTrade.closedAt >= 1.5 then
+        local after = CountBagItemCopies()
+        local confirmed = {}
+        for itemID, quantity in pairs(recentTrade.offered or {}) do
+            local lost = (recentTrade.before[itemID] or 0) - (after[itemID] or 0)
+            if lost > 0 then
+                confirmed[itemID] = math.min(quantity, lost)
+            end
+        end
+        if next(confirmed) then
+            recentTrade.offered = confirmed
+            CompleteMarkedTrade(recentTrade)
+        end
+        recentTrade.accepted = false
+    end
+    if recentTrade and (GetTime() - recentTrade.closedAt) > 5 then
+        recentTrade = nil
+    end
     if not bagTrackingReady or not bagMarks or #bagMarks == 0 then return end
     self.bagMarkElapsed = (self.bagMarkElapsed or 0) + elapsed
     if self.bagMarkElapsed >= 5 then
@@ -2636,6 +2845,43 @@ frame:SetScript("OnEvent", function(self, event, ...)
         if guildVersionsFrame and guildVersionsFrame:IsShown() then
             GuildVersionBuildRoster()
             GuildVersionDraw()
+        end
+        return
+    end
+
+    if event == "TRADE_SHOW" then
+        BeginMarkedTrade()
+        return
+    end
+
+    if event == "TRADE_UPDATE" or event == "TRADE_PLAYER_ITEM_CHANGED" or event == "TRADE_ACCEPT_UPDATE" then
+        UpdateMarkedTrade()
+        if event == "TRADE_ACCEPT_UPDATE" and tradeState then
+            local playerAccepted, partnerAccepted = ...
+            tradeState.accepted = playerAccepted == 1 and partnerAccepted == 1
+            if tradeState.accepted then
+                tradeState.acceptedOffer = {}
+                for itemID, count in pairs(tradeState.offered or {}) do
+                    tradeState.acceptedOffer[itemID] = count
+                end
+            end
+        end
+        return
+    end
+
+    if event == "TRADE_CLOSED" then
+        EndMarkedTrade()
+        return
+    end
+
+    if event == "UI_INFO_MESSAGE" then
+        if IsTradeCompleteMessage(...) then
+            if tradeState then
+                UpdateMarkedTrade()
+                CompleteMarkedTrade(tradeState)
+            elseif recentTrade and GetTime() - recentTrade.closedAt <= 5 then
+                CompleteMarkedTrade(recentTrade)
+            end
         end
         return
     end
