@@ -68,6 +68,11 @@ local function ParseSyncEntry(msg, sender)
     return entry, LogKey(entry)
 end
 
+local logRevision = 0
+local refreshPending = false
+local syncDirtyLog = false
+local syncDirty = false
+
 local function RefreshLogViews()
     table.sort(mod.db.profile.log, function(a, b) return a[1] < b[1] end)
     local filtered = mod.db.profile.filtred_logs
@@ -78,7 +83,28 @@ local function RefreshLogViews()
             table.insert(filtered, entry)
         end
     end
+    logRevision = logRevision + 1
     mod.callbacks:Fire("LogChanged", #mod.db.profile.log)
+end
+
+function mod:GetLogRevision()
+    return logRevision
+end
+
+function mod:FlushLogChanges()
+    refreshPending = false
+    if not syncDirtyLog then return end
+    syncDirtyLog = false
+    syncDirty = false
+    RefreshLogViews()
+end
+
+local function ScheduleLogRefresh()
+    syncDirtyLog = true
+    if not refreshPending then
+        refreshPending = true
+        mod:ScheduleTimer("FlushLogChanges", 0.75)
+    end
 end
 
 local function log(...)
@@ -97,12 +123,8 @@ local function AppendToLog(kind, event_type, name, reason, amount, mass, undo)
     table.insert(mod.db.profile.log, entry)
     exists_logs[string.format(LOG_FORMAT_NEW, unpack(entry))] = true
 
-    if CheckFilter(entry, mod.db.profile.filter) then
-        table.insert(mod.db.profile.filtred_logs, entry)
-    end
-
     mod:SendCommMessage("EPGP", string.format(LOG_FORMAT_NEW, unpack(entry)), "GUILD", nil, "BULK")
-    callbacks:Fire("LogChanged", #mod.db.profile.log)
+    ScheduleLogRefresh()
 end
 
 function mod:LogSync(prefix, msg, distribution, sender)
@@ -113,7 +135,7 @@ function mod:LogSync(prefix, msg, distribution, sender)
     if entry and key and not exists_logs[key] then
         table.insert(self.db.profile.log, entry)
         exists_logs[key] = true
-        RefreshLogViews()
+        ScheduleLogRefresh()
     end
 end
 
@@ -149,6 +171,7 @@ function mod:SetFilter(search)
         end
     end
 
+    logRevision = logRevision + 1
     callbacks:Fire("LogChanged", #self.db.profile.filtred_logs)
 end
 
@@ -532,7 +555,6 @@ mod.dbDefaults = {
     }
 }
 
-local syncDirty = false
 local lastSyncRequest
 local lastFullRequest
 local hasCompletedSync = false
@@ -555,7 +577,8 @@ end
 function mod:FinalizeSync()
     if not syncDirty then return end
     syncDirty = false
-    RefreshLogViews()
+    syncDirtyLog = true
+    self:FlushLogChanges()
 end
 
 function mod:RequestLogSync(days)
@@ -636,8 +659,8 @@ function mod:EPGP_SYNC_LOG(tag, msg, channel, sender)
     exists_logs[key] = true
     if not syncDirty then
         syncDirty = true
-        self:ScheduleTimer("FinalizeSync", 15)
     end
+    ScheduleLogRefresh()
 end
 
 function mod:EPGP_SYNC_RESPONSE(tag, msg, channel, sender)
@@ -682,6 +705,8 @@ function mod:OnEnable()
     end
 
     syncDirty = false
+    syncDirtyLog = false
+    refreshPending = false
     hasCompletedSync = false
     lastSyncRequest = nil
     lastFullRequest = nil
@@ -699,6 +724,9 @@ end
 
 function mod:OnDisable()
     self:UnregisterEvent("GUILD_ROSTER_UPDATE")
+    refreshPending = false
+    syncDirtyLog = false
+    syncDirty = false
     self:CancelAllTimers()
     self:UnregisterAllComm()
 end

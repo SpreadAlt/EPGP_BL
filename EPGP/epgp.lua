@@ -900,16 +900,71 @@ function EPGP:GetMain(name)
   return main_data[name] or name
 end
 
+local massEPFrame = CreateFrame("Frame")
+local massEPJob
+local massEPElapsed = 0
+massEPFrame:Hide()
+
+local function CompleteMassEPJob(job)
+  massEPJob = nil
+  massEPFrame:Hide()
+  if next(job.awarded) or next(job.extras_awarded) then
+    if next(job.extras_awarded) then
+      callbacks:Fire("MassEPAward", job.awarded, job.reason, job.amount,
+                     job.extras_awarded, job.extras_reason, job.extras_amount)
+    else
+      callbacks:Fire("MassEPAward", job.awarded, job.reason, job.amount)
+    end
+  end
+end
+
+massEPFrame:SetScript("OnUpdate", function(self, elapsed)
+  if not massEPJob then self:Hide() return end
+  massEPElapsed = massEPElapsed + elapsed
+  if massEPElapsed < 0.2 then return end
+  massEPElapsed = massEPElapsed - 0.2
+  local job = massEPJob
+  if not IsInGuild() or not CanEditOfficerNote() then
+    EPGP:Print("Массовое начисление EP прервано: нет доступа к заметкам гильдии.")
+    CompleteMassEPJob(job)
+    return
+  end
+  local entry = job.entries[job.index]
+  if not entry then
+    CompleteMassEPJob(job)
+    return
+  end
+  job.index = job.index + 1
+  local ok, recipient = pcall(EPGP.IncEPBy, EPGP, entry.name, entry.reason, entry.amount, true)
+  if ok then
+    if recipient then
+      if entry.extras then
+        job.extras_awarded[recipient] = true
+      else
+        job.awarded[recipient] = true
+      end
+    end
+  else
+    EPGP:Print("Ошибка массового начисления EP для " .. entry.name .. ": " .. tostring(recipient))
+  end
+  if job.index > #job.entries then
+    CompleteMassEPJob(job)
+  end
+end)
+
 function EPGP:IncMassEPBy(reason, amount)
-  if not self:CanMassAwardEP() then
+  if massEPJob then
+    self:Print("Массовое начисление EP уже выполняется.")
     return false
   end
-  local awarded = {}
-  local extras_awarded = {}
+  if not self:CanMassAwardEP() or not self:CanIncEPBy(reason, amount) then
+    return false
+  end
   local extras_amount = math.floor(global_config.extras_p * 0.01 * amount)
   local extras_reason = "Замена: " .. reason
   local extras_mains = {}
   local processed = {}
+  local entries = {}
 
   for name, is_selected in pairs(selected) do
     if is_selected and name ~= "_count" then
@@ -936,27 +991,41 @@ function EPGP:IncMassEPBy(reason, amount)
       if ep and not processed[member] then
         processed[member] = true
         if extras_mains[member] then
-          local recipient = EPGP:IncEPBy(name, extras_reason, extras_amount, true)
-          if recipient then
-            extras_awarded[recipient] = true
+          if extras_amount ~= 0 then
+            table.insert(entries, {name = name, member = member, reason = extras_reason, amount = extras_amount, extras = true})
           end
         else
-          local recipient = EPGP:IncEPBy(name, reason, amount, true)
-          if recipient then
-            awarded[recipient] = true
-          end
+          table.insert(entries, {name = name, member = member, reason = reason, amount = amount})
         end
       end
     end
   end
-  if next(awarded) or next(extras_awarded) then
-    if next(extras_awarded) then
-      callbacks:Fire("MassEPAward", awarded, reason, amount,
-                     extras_awarded, extras_reason, extras_amount)
+
+  if #entries == 0 then return true end
+  massEPJob = {
+    entries = entries,
+    index = 1,
+    awarded = {},
+    extras_awarded = {},
+    amount = amount,
+    reason = reason,
+    extras_amount = extras_amount,
+    extras_reason = extras_reason,
+  }
+  massEPElapsed = 0
+  local announced = {}
+  local extras_announced = {}
+  for i = 1, #entries do
+    local entry = entries[i]
+    if entry.extras then
+      extras_announced[entry.member] = true
     else
-      callbacks:Fire("MassEPAward", awarded, reason, amount)
+      announced[entry.member] = true
     end
   end
+  callbacks:Fire("MassEPStart", announced, reason, amount,
+                 extras_announced, extras_reason, extras_amount)
+  massEPFrame:Show()
   return true
 end
 

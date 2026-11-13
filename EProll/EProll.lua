@@ -2758,12 +2758,6 @@ SlashCmdList["EPROLLWINDOW"] = function(msg)
     RefreshAuctionFrame()
 end
 
-SLASH_EPROLLVERSIONS1 = "/epver"
-
-SlashCmdList["EPROLLVERSIONS"] = function()
-    EProll_ShowGuildVersions()
-end
-
 frame:RegisterEvent("ADDON_LOADED")
 frame:RegisterEvent("PLAYER_LOGIN")
 frame:RegisterEvent("LOOT_OPENED")

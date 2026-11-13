@@ -577,9 +577,10 @@ local function CreateEPGPLogFrame()
             return
         end
         local log = EPGP:GetModule("log")
+        EPGPLogFrame.epgpLogRevision = log:GetLogRevision()
         local offset = FauxScrollFrame_GetOffset(scrollBar)
         local numRecords = log:GetNumRecords()
-        local numDisplayedRecords = math.min(numLogRecordFrames, numRecords - offset)
+        local numDisplayedRecords = math.min(numLogRecordFrames, math.max(0, numRecords - offset))
         local recordWidth = scrollParent:GetWidth() - 35
         for i = 1, numLogRecordFrames do
             local record = getglobal("EPGPLogRecordFrame" .. i)
@@ -600,6 +601,13 @@ local function CreateEPGPLogFrame()
 
     EPGPLogFrame:SetScript("OnShow", LogChanged)
     EPGPLogFrame:SetScript("OnSizeChanged", LogChanged)
+    EPGPLogFrame:SetScript("OnUpdate", function(self, elapsed)
+        self.epgpLogElapsed = (self.epgpLogElapsed or 0) + elapsed
+        if self.epgpLogElapsed < 1 then return end
+        self.epgpLogElapsed = 0
+        local revision = EPGP:GetModule("log"):GetLogRevision()
+        if revision ~= self.epgpLogRevision then LogChanged() end
+    end)
     scrollBar:SetScript(
         "OnVerticalScroll",
         function(self, value)
@@ -786,7 +794,10 @@ local function CreateEPGPPersonalLogFrame()
         function(self, value) EPGP:GetModule("log"):UndoLastAction(f.playerName) end)
     undo:SetScript(
         "OnUpdate",
-        function(self)
+        function(self, elapsed)
+            self.epgpCheckElapsed = (self.epgpCheckElapsed or 0) + elapsed
+            if self.epgpCheckElapsed < 0.5 then return end
+            self.epgpCheckElapsed = 0
             if EPGP:GetModule("log"):CanUndo(f.playerName) then
                 self:Enable()
             else
@@ -807,7 +818,10 @@ local function CreateEPGPPersonalLogFrame()
         function(self, value) EPGP:GetModule("log"):RedoLastUndo(f.playerName) end)
     redo:SetScript(
         "OnUpdate",
-        function(self)
+        function(self, elapsed)
+            self.epgpCheckElapsed = (self.epgpCheckElapsed or 0) + elapsed
+            if self.epgpCheckElapsed < 0.5 then return end
+            self.epgpCheckElapsed = 0
             if EPGP:GetModule("log"):CanRedo(f.playerName) then
                 self:Enable()
             else
@@ -868,6 +882,7 @@ local function CreateEPGPPersonalLogFrame()
             return
         end
         local log = EPGP:GetModule("log")
+        f.epgpLogRevision = log:GetLogRevision()
         local offset = FauxScrollFrame_GetOffset(scrollBar)
         f.records = log:GetPersonalLogRecords(f.playerName)
         local numRecords = #f.records
@@ -892,6 +907,13 @@ local function CreateEPGPPersonalLogFrame()
 
     f:SetScript("OnShow", PersonalLogChanged)
     f:SetScript("OnSizeChanged", PersonalLogChanged)
+    f:SetScript("OnUpdate", function(self, elapsed)
+        self.epgpLogElapsed = (self.epgpLogElapsed or 0) + elapsed
+        if self.epgpLogElapsed < 1 then return end
+        self.epgpLogElapsed = 0
+        local revision = EPGP:GetModule("log"):GetLogRevision()
+        if revision ~= self.epgpLogRevision then PersonalLogChanged() end
+    end)
     scrollBar:SetScript(
         "OnVerticalScroll",
         function(self, value)

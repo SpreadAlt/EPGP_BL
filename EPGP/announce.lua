@@ -94,6 +94,12 @@ function mod:MassEPAward(event_name, names, reason, amount,
   end
 end
 
+function mod:MassEPStart(event_name, names, reason, amount,
+                         extras_names, extras_reason, extras_amount)
+  self:MassEPAward(event_name, names, reason, amount,
+                   extras_names, extras_reason, extras_amount)
+end
+
 function mod:MassGPAward(event_name, names, reason, amount, extras_names, extras_reason, extras_amount)
   local normal = MakeCommaSeparated(names)
   mod:Announce("% d GP (%s) для %s", amount, reason, normal)
@@ -193,10 +199,10 @@ end
 function mod:SetEvent(i, e, v)
   if v then
     Debug("Enabling announce of: %s", e)
-    EPGP.RegisterCallback(self, e)
+    EPGP.RegisterCallback(self, e == "MassEPAward" and "MassEPStart" or e)
   else
     Debug("Disabling announce of: %s", e)
-    EPGP.UnregisterCallback(self, e)
+    EPGP.UnregisterCallback(self, e == "MassEPAward" and "MassEPStart" or e)
   end
   self.db.profile.events[e] = v
 end
@@ -205,7 +211,7 @@ function mod:OnEnable()
   for e, _ in pairs(mod.optionsArgs.events.values) do
     if self.db.profile.events[e] then
       Debug("Enabling announce of: %s (startup)", e)
-      EPGP.RegisterCallback(self, e)
+      EPGP.RegisterCallback(self, e == "MassEPAward" and "MassEPStart" or e)
     end
   end
 end
