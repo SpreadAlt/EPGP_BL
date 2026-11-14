@@ -1949,7 +1949,7 @@ local function CreateEPGPSideFrame2()
         if reason == L["Other"] then
             reason = epFrame.otherEditBox:GetText()
         end
-        if EPGP:CanMassAwardEP() and EPGP:CanIncEPBy(reason, epFrame.editBox:GetNumber()) then
+        if EPGP:CanQueueMassEP(reason, epFrame.editBox:GetNumber()) then
             self:Enable()
         else
             self:Disable()
@@ -1962,7 +1962,7 @@ local function CreateEPGPSideFrame2()
             reason = epFrame.otherEditBox:GetText()
         end
         if EPGP:RunningRecurringEP() or
-            (EPGP:CanMassAwardEP() and EPGP:CanIncEPBy(reason, epFrame.editBox:GetNumber())) then
+            (EPGP:CanQueueMassEP(reason, epFrame.editBox:GetNumber())) then
             self:Enable()
         else
             self:Disable()

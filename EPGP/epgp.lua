@@ -327,6 +327,320 @@ local function DestroyStandings()
   callbacks:Fire("StandingsChanged")
 end
 
+local standbyPrefix = "EPGSTD17"
+local standbyRanks = {
+  ["Мастер гильдии"] = true,
+  ["Зам ГМ/РЛ"] = true,
+  ["Офицер"] = true,
+}
+local standbyProfile
+local standbySyncQueue = {}
+local standbySyncElapsed = 0
+local standbySyncRequest = false
+local standbyLastRequest = 0
+local standbyLastReply = {}
+local standbyGroupKey
+local standbyCleanupElapsed = 0
+local standbyOfflineLimit = 30 * 60
+local standbySyncFrame = CreateFrame("Frame")
+
+local function StandbyShortName(name)
+  if type(name) ~= "string" then return nil end
+  return string.match(name, "^[^-]+")
+end
+
+local function StandbyGroupChannel()
+  if type(GetNumRaidMembers) == "function" and GetNumRaidMembers() > 0 then
+    return "RAID"
+  end
+  if type(GetNumPartyMembers) == "function" and GetNumPartyMembers() > 0 then
+    return "PARTY"
+  end
+  return nil
+end
+
+local function StandbyGroupMembers()
+  local channel = StandbyGroupChannel()
+  if not channel then return nil, nil end
+  local members = {}
+  local count = channel == "RAID" and GetNumRaidMembers() or GetNumPartyMembers()
+  for i = 1, count do
+    local member = StandbyShortName(UnitName((channel == "RAID" and "raid" or "party") .. i))
+    if member then members[member] = true end
+  end
+  local selfName = StandbyShortName(UnitName("player"))
+  if selfName then members[selfName] = true end
+  return channel, members
+end
+
+local function StandbyInGroup(name)
+  name = StandbyShortName(name)
+  if not name then return false end
+  local _, members = StandbyGroupMembers()
+  return members and not not members[name] or false
+end
+
+local function StandbyGroupIdentity()
+  local channel, members = StandbyGroupMembers()
+  if not channel then return nil end
+  local names = {}
+  for name in pairs(members) do table.insert(names, name) end
+  table.sort(names)
+  return channel .. ":" .. table.concat(names, ",")
+end
+
+local function StandbyOfficer(name)
+  name = StandbyShortName(name)
+  if not name or not IsInGuild() then return false end
+  if name == UnitName("player") then
+    local _, rank = GetGuildInfo("player")
+    if standbyRanks[rank] then return true end
+  end
+  if type(GS.GetRank) == "function" and standbyRanks[GS:GetRank(name)] then
+    return true
+  end
+  for i = 1, GetNumGuildMembers(true) do
+    local member, rank = GetGuildRosterInfo(i)
+    if StandbyShortName(member) == name then
+      return not not standbyRanks[rank]
+    end
+  end
+  return false
+end
+
+local function StandbyStore()
+  if not db or not db.profile then return nil end
+  if type(db.profile.standby_sync) ~= "table" then
+    db.profile.standby_sync = { clock = 0, entries = {} }
+  end
+  local store = db.profile.standby_sync
+  if type(store.entries) ~= "table" then store.entries = {} end
+  if type(store.clock) ~= "number" then store.clock = 0 end
+  if type(store.offlineSince) ~= "table" then store.offlineSince = {} end
+  return store
+end
+
+local function StandbyPacket(name, entry)
+  return table.concat({"U", name, tostring(entry[1]), tostring(entry[2]),
+                       tostring(entry[3]), entry[4]}, "\t")
+end
+
+local function StandbyEnqueue(message, channel, recipient, delay)
+  local currentChannel = StandbyGroupChannel()
+  local groupKey = StandbyGroupIdentity()
+  if not currentChannel or not groupKey or #standbySyncQueue >= 800 then return end
+  channel = channel or currentChannel
+  if channel ~= currentChannel and channel ~= "WHISPER" then return end
+  if channel == "WHISPER" and not StandbyInGroup(recipient) then return end
+  table.insert(standbySyncQueue, {
+    message = message,
+    channel = channel,
+    recipient = recipient,
+    groupKey = groupKey,
+    due = GetTime() + (delay or 0),
+  })
+end
+
+local function StandbyLoad()
+  if not db or not db.profile then return end
+  local profile = db:GetCurrentProfile()
+  if profile == standbyProfile then return end
+  standbyProfile = profile
+  wipe(selected)
+  selected._count = 0
+  local store = StandbyStore()
+  if store then
+    for name, entry in pairs(store.entries) do
+      if type(name) == "string" and type(entry) == "table" and entry[1] == 1 then
+        selected[name] = true
+        selected._count = selected._count + 1
+      end
+    end
+  end
+  wipe(standbySyncQueue)
+  wipe(standbyLastReply)
+  standbyGroupKey = nil
+  standbySyncRequest = true
+  standbyLastRequest = 0
+  DestroyStandings()
+end
+
+local function StandbyMerge(name, state, stamp, order, author)
+  local store = StandbyStore()
+  if not store then return end
+  local current = store.entries[name]
+  if current and (
+      current[2] > stamp or
+      (current[2] == stamp and current[3] > order) or
+      (current[2] == stamp and current[3] == order and current[4] >= author)
+    ) then
+    return
+  end
+  store.clock = math.max(store.clock, order)
+  store.entries[name] = {state, stamp, order, author}
+  store.offlineSince[name] = nil
+  local was = not not selected[name]
+  local now = state == 1
+  if was ~= now then
+    if now then
+      selected[name] = true
+      selected._count = selected._count + 1
+    else
+      selected[name] = nil
+      selected._count = math.max(0, selected._count - 1)
+    end
+    DestroyStandings()
+  end
+end
+
+local function StandbyChange(name, enabled)
+  name = StandbyShortName(name)
+  if not name or not string.match(name, "^[^%c|\t]+$") then return end
+  local store = StandbyStore()
+  if not store then return end
+  local now = not not selected[name]
+  if now == enabled then return end
+  store.clock = store.clock + 1
+  local me = UnitName("player") or ""
+  local entry = {enabled and 1 or 0, time(), store.clock, me}
+  store.entries[name] = entry
+  store.offlineSince[name] = nil
+  if enabled then
+    selected[name] = true
+    selected._count = selected._count + 1
+  else
+    selected[name] = nil
+    selected._count = math.max(0, selected._count - 1)
+  end
+  DestroyStandings()
+  if StandbyOfficer(me) and StandbyGroupChannel() then
+    StandbyEnqueue(StandbyPacket(name, entry))
+  end
+end
+
+local function StandbyCleanup()
+  if not IsInGuild() or not StandbyOfficer(UnitName("player")) then return end
+  if type(GS.IsCurrentState) == "function" and not GS:IsCurrentState() then return end
+  local store = StandbyStore()
+  if not store then return end
+  local online = {}
+  local known = {}
+  for i = 1, GetNumGuildMembers(true) do
+    local character, _, _, _, _, _, _, _, isOnline = GetGuildRosterInfo(i)
+    character = StandbyShortName(character)
+    if character and type(isOnline) == "boolean" then
+      local main = main_data[character] or character
+      known[character] = true
+      known[main] = true
+      if isOnline then
+        online[character] = true
+        online[main] = true
+      end
+    end
+  end
+  local now = time()
+  local expired = {}
+  for name, value in pairs(selected) do
+    if value == true and name ~= "_count" then
+      local main = main_data[name] or name
+      if online[name] or online[main] or StandbyInGroup(name) then
+        store.offlineSince[name] = nil
+      elseif known[name] or known[main] then
+        local since = store.offlineSince[name]
+        if type(since) ~= "number" or since > now then
+          store.offlineSince[name] = now
+        elseif now - since >= standbyOfflineLimit then
+          table.insert(expired, name)
+        end
+      else
+        store.offlineSince[name] = nil
+      end
+    end
+  end
+  for _, name in ipairs(expired) do
+    StandbyChange(name, false)
+  end
+end
+
+function EPGP:StandbyCHAT_MSG_ADDON(event, prefix, message, channel, sender)
+  local currentChannel = StandbyGroupChannel()
+  if prefix ~= standbyPrefix or not currentChannel then return end
+  if channel ~= currentChannel and channel ~= "WHISPER" then return end
+  if not IsInGuild() or not db or type(message) ~= "string" or not StandbyInGroup(sender) then return end
+  if not StandbyOfficer(sender) then return end
+  if StandbyShortName(sender) == UnitName("player") then return end
+  StandbyLoad()
+  if not StandbyOfficer(UnitName("player")) then return end
+  if message == "Q" then
+    local now = GetTime()
+    if standbyLastReply[sender] and now - standbyLastReply[sender] < 20 then return end
+    standbyLastReply[sender] = now
+    local store = StandbyStore()
+    if not store then return end
+    local delay = 0.1 + math.random() * 0.8
+    for name, entry in pairs(store.entries) do
+      if type(entry) == "table" and type(entry[1]) == "number" and
+         type(entry[2]) == "number" and type(entry[3]) == "number" and
+         type(entry[4]) == "string" then
+        StandbyEnqueue(StandbyPacket(name, entry), "WHISPER", sender, delay)
+      end
+    end
+  else
+    local name, state, stamp, order, author = string.match(message,
+      "^U\t([^\t]+)\t([01])\t(%d+)\t(%d+)\t([^\t]+)$")
+    if not name then return end
+    if #name > 48 or #author > 48 or StandbyShortName(author) ~= StandbyShortName(sender) then return end
+    if not StandbyOfficer(author) then return end
+    stamp, order = tonumber(stamp), tonumber(order)
+    if not stamp or not order or stamp > time() + 86400 or order > 1000000000 then return end
+    StandbyMerge(name, tonumber(state), stamp, order, author)
+  end
+end
+
+standbySyncFrame:SetScript("OnUpdate", function(self, elapsed)
+  standbySyncElapsed = standbySyncElapsed + elapsed
+  standbyCleanupElapsed = standbyCleanupElapsed + elapsed
+  if standbySyncElapsed < 0.35 then return end
+  standbySyncElapsed = 0
+  if not IsInGuild() or not db then return end
+  local groupKey = StandbyGroupIdentity()
+  if groupKey ~= standbyGroupKey then
+    standbyGroupKey = groupKey
+    wipe(standbySyncQueue)
+    wipe(standbyLastReply)
+    standbyLastRequest = 0
+    standbySyncRequest = groupKey ~= nil
+  end
+  if standbyCleanupElapsed >= 30 then
+    standbyCleanupElapsed = 0
+    StandbyCleanup()
+  end
+  if not groupKey then return end
+  local now = GetTime()
+  if not standbySyncRequest and #standbySyncQueue == 0 and
+     not (standbyLastRequest > 0 and now - standbyLastRequest > 180) then return end
+  if not StandbyOfficer(UnitName("player")) then return end
+  if standbySyncRequest or (standbyLastRequest > 0 and now - standbyLastRequest > 180) then
+    standbySyncRequest = false
+    standbyLastRequest = now
+    StandbyEnqueue("Q")
+  end
+  if #standbySyncQueue == 0 then return end
+  local entry = standbySyncQueue[1]
+  if now < entry.due then return end
+  table.remove(standbySyncQueue, 1)
+  if entry.groupKey ~= groupKey then return end
+  if entry.channel == "WHISPER" and not StandbyInGroup(entry.recipient) then return end
+  if type(SendAddonMessage) == "function" then
+    if ChatThrottleLib then
+      ChatThrottleLib:SendAddonMessage("BULK", standbyPrefix, entry.message,
+                                     entry.channel, entry.recipient)
+    else
+      SendAddonMessage(standbyPrefix, entry.message, entry.channel, entry.recipient)
+    end
+  end
+end)
+
 local function RefreshStandings(order, showEveryone)
   Debug("Resorting standings")
   if UnitInRaid("player") then
@@ -590,9 +904,7 @@ function EPGP:SelectMember(name)
   if not name or selected[name] then
     return false
   end
-  selected[name] = true
-  selected._count = selected._count + 1
-  DestroyStandings()
+  StandbyChange(name, true)
   return true
 end
 
@@ -601,9 +913,7 @@ function EPGP:DeSelectMember(name)
   if not selected[name] then
     return false
   end
-  selected[name] = nil
-  selected._count = selected._count - 1
-  DestroyStandings()
+  StandbyChange(name, false)
   return true
 end
 
@@ -778,7 +1088,18 @@ function EPGP:CanIncEPBy(reason, amount)
   return true
 end
 
+local EPWorkBusy
+local EPWorkProcessing = false
+
 function EPGP:IncEPBy(name, reason, amount, mass, undo)
+  if not mass and not undo and type(name) == "string" and name ~= "" and
+     type(reason) == "string" and reason ~= "" and type(amount) == "number" and
+     amount ~= 0 and amount == math.floor(amount + 0.5) and
+     amount >= -99999 and amount <= 99999 and IsInGuild() and
+     CanEditOfficerNote() and not EPWorkProcessing and
+     (not GS:IsCurrentState() or (EPWorkBusy and EPWorkBusy())) then
+    return self:QueueEPBy(name, reason, amount)
+  end
   -- When we do mass EP or decay we know what we are doing even though
   -- CanIncEPBy returns false
   assert(EPGP:CanIncEPBy(reason, amount) or mass or undo)
@@ -902,13 +1223,16 @@ end
 
 local massEPFrame = CreateFrame("Frame")
 local massEPJob
+local massEPQueue = {}
 local massEPElapsed = 0
 massEPFrame:Hide()
+EPWorkBusy = function()
+  return massEPJob ~= nil or #massEPQueue > 0
+end
 
 local function CompleteMassEPJob(job)
   massEPJob = nil
-  massEPFrame:Hide()
-  if next(job.awarded) or next(job.extras_awarded) then
+  if job.kind == "mass" and (next(job.awarded) or next(job.extras_awarded)) then
     if next(job.extras_awarded) then
       callbacks:Fire("MassEPAward", job.awarded, job.reason, job.amount,
                      job.extras_awarded, job.extras_reason, job.extras_amount)
@@ -916,16 +1240,77 @@ local function CompleteMassEPJob(job)
       callbacks:Fire("MassEPAward", job.awarded, job.reason, job.amount)
     end
   end
+  if #massEPQueue == 0 then
+    massEPFrame:Hide()
+  end
+end
+
+local function QueueEPWork(job)
+  if #massEPQueue >= 50 then
+    EPGP:Print("Очередь начислений EP заполнена (50 операций).")
+    return false
+  end
+  table.insert(massEPQueue, job)
+  massEPFrame:Show()
+  return true
+end
+
+function EPGP:QueueEPBy(name, reason, amount)
+  if type(name) ~= "string" or name == "" then
+    self:Print("Не выбрана цель для изменения EP.")
+    return false
+  end
+  if type(reason) ~= "string" or reason == "" or type(amount) ~= "number" or
+     amount ~= math.floor(amount + 0.5) or amount == 0 or
+     amount < -99999 or amount > 99999 then
+    return false
+  end
+  if not IsInGuild() or not CanEditOfficerNote() then
+    self:Print("Нет доступа к изменению EP.")
+    return false
+  end
+  if GS:IsCurrentState() and not self:GetEPGP(name) then
+    self:Print("Нет данных EPGP для " .. name)
+    return false
+  end
+  return QueueEPWork({kind = "single", name = name, reason = reason,
+                      amount = amount, created = GetTime()})
 end
 
 massEPFrame:SetScript("OnUpdate", function(self, elapsed)
-  if not massEPJob then self:Hide() return end
   massEPElapsed = massEPElapsed + elapsed
   if massEPElapsed < 0.2 then return end
-  massEPElapsed = massEPElapsed - 0.2
+  massEPElapsed = 0
+  if not massEPJob then
+    massEPJob = table.remove(massEPQueue, 1)
+    if not massEPJob then self:Hide() return end
+  end
   local job = massEPJob
   if not IsInGuild() or not CanEditOfficerNote() then
-    EPGP:Print("Массовое начисление EP прервано: нет доступа к заметкам гильдии.")
+    EPGP:Print("Очередь EP остановлена: нет доступа к заметкам гильдии.")
+    massEPJob = nil
+    wipe(massEPQueue)
+    self:Hide()
+    return
+  end
+  if not GS:IsCurrentState() then
+    if job.kind == "single" and GetTime() - job.created > 60 then
+      EPGP:Print("Списание EP не выполнено за 60 секунд: " .. job.name)
+      CompleteMassEPJob(job)
+    end
+    return
+  end
+  if job.kind == "single" then
+    if not EPGP:CanIncEPBy(job.reason, job.amount) then
+      CompleteMassEPJob(job)
+      return
+    end
+    EPWorkProcessing = true
+    local ok, result = pcall(EPGP.IncEPBy, EPGP, job.name, job.reason, job.amount)
+    EPWorkProcessing = false
+    if not ok then
+      EPGP:Print("Ошибка изменения EP для " .. job.name .. ": " .. tostring(result))
+    end
     CompleteMassEPJob(job)
     return
   end
@@ -952,12 +1337,15 @@ massEPFrame:SetScript("OnUpdate", function(self, elapsed)
   end
 end)
 
+function EPGP:CanQueueMassEP(reason, amount)
+  return not not (self:CanMassAwardEP() and IsInGuild() and CanEditOfficerNote() and
+         type(reason) == "string" and #reason > 0 and type(amount) == "number" and
+         amount == math.floor(amount + 0.5) and amount ~= 0 and
+         amount >= -99999 and amount <= 99999 and #massEPQueue < 50)
+end
+
 function EPGP:IncMassEPBy(reason, amount)
-  if massEPJob then
-    self:Print("Массовое начисление EP уже выполняется.")
-    return false
-  end
-  if not self:CanMassAwardEP() or not self:CanIncEPBy(reason, amount) then
+  if not self:CanQueueMassEP(reason, amount) then
     return false
   end
   local extras_amount = math.floor(global_config.extras_p * 0.01 * amount)
@@ -1002,7 +1390,8 @@ function EPGP:IncMassEPBy(reason, amount)
   end
 
   if #entries == 0 then return true end
-  massEPJob = {
+  local job = {
+    kind = "mass",
     entries = entries,
     index = 1,
     awarded = {},
@@ -1012,7 +1401,7 @@ function EPGP:IncMassEPBy(reason, amount)
     extras_amount = extras_amount,
     extras_reason = extras_reason,
   }
-  massEPElapsed = 0
+  if not QueueEPWork(job) then return false end
   local announced = {}
   local extras_announced = {}
   for i = 1, #entries do
@@ -1025,7 +1414,6 @@ function EPGP:IncMassEPBy(reason, amount)
   end
   callbacks:Fire("MassEPStart", announced, reason, amount,
                  extras_announced, extras_reason, extras_amount)
-  massEPFrame:Show()
   return true
 end
 
@@ -1154,6 +1542,7 @@ function EPGP:GUILD_ROSTER_UPDATE()
         Debug("Setting DB profile to: %s", guild)
         db:SetProfile(guild)
       end
+      StandbyLoad()
       -- This means we didn't initialize the db yet.
       if not EPGP.db then
         EPGP.db = db
@@ -1185,6 +1574,10 @@ function EPGP:OnEnable()
 
   self:RegisterEvent("RAID_ROSTER_UPDATE")
   self:RegisterEvent("GUILD_ROSTER_UPDATE")
+  self:RegisterEvent("CHAT_MSG_ADDON", "StandbyCHAT_MSG_ADDON")
+  if type(RegisterAddonMessagePrefix) == "function" then
+    RegisterAddonMessagePrefix(standbyPrefix)
+  end
 
   GuildRoster()
 end
