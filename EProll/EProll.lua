@@ -428,6 +428,7 @@ local function RefreshWonBagItems()
     local now = time()
     for i = #marks, 1, -1 do
         local mark = marks[i]
+        if type(mark) == "table" and not tradeState then mark.tradePending = nil end
         if type(mark) ~= "table" or not mark.itemID or not mark.winner then
             table.remove(marks, i)
         elseif ShortName(mark.winner) == ShortName(UnitName("player")) then
@@ -437,7 +438,10 @@ local function RefreshWonBagItems()
         end
     end
     for _, mark in ipairs(marks) do
-        if mark.bag ~= nil and mark.slot ~= nil then
+        if mark.tradePending and tradeState then
+            mark.bag = nil
+            mark.slot = nil
+        elseif mark.bag ~= nil and mark.slot ~= nil then
             local key = tostring(mark.bag) .. ":" .. tostring(mark.slot)
             local item = current[key]
             if item and item.itemID == mark.itemID and not occupied[key] then
@@ -467,7 +471,7 @@ local function RefreshWonBagItems()
         return nil
     end
     for _, mark in ipairs(marks) do
-        if mark.bag == nil then
+        if mark.bag == nil and not tradeState then
             local found, key
             if mark.bagAtWin ~= nil and mark.slotAtWin ~= nil then
                 local origin = tostring(mark.bagAtWin) .. ":" .. tostring(mark.slotAtWin)
@@ -555,14 +559,6 @@ local function RecordWonItem(link, winner, amount)
     RefreshWonBagItems()
 end
 
-local function TradePartnerName()
-    local name = UnitName("NPC")
-    if not name and _G.TradeFrameRecipientNameText then
-        name = _G.TradeFrameRecipientNameText:GetText()
-    end
-    return name
-end
-
 local function CaptureTradeOffer()
     if not tradeState or type(GetTradePlayerItemLink) ~= "function" then return end
     local offered = {}
@@ -612,6 +608,95 @@ local function IsTradeCompleteMessage(...)
     return false
 end
 
+local function TradePartnerName()
+    local name = UnitName("NPC")
+    if not name and _G.TradeFrameRecipientNameText then
+        name = _G.TradeFrameRecipientNameText:GetText()
+    end
+    return name
+end
+
+local function ClearAutoTradePending(info)
+    if not info or not info.autoMarks then return end
+    for mark in pairs(info.autoMarks) do
+        mark.tradePending = nil
+    end
+end
+
+local function FindEmptyTradeSlot()
+    if type(GetTradePlayerItemLink) ~= "function" then return nil end
+    for slot = 1, (MAX_TRADABLE_ITEMS or 6) do
+        if not GetTradePlayerItemLink(slot) then
+            local button = _G["TradePlayerItem" .. slot .. "ItemButton"]
+            if not button or not button.hasItem then
+                return slot
+            end
+        end
+    end
+    return nil
+end
+
+local function AutoFillMarkedTrade()
+    if not tradeState or not bagMarks then return end
+    tradeState.partner = tradeState.partner or TradePartnerName()
+    if not tradeState.partner then return end
+    if _G.TradeFrame and not TradeFrame:IsShown() then return end
+    if tradeState.accepted then return end
+    if type(PickupContainerItem) ~= "function" or type(ClickTradeButton) ~= "function" then return end
+    if type(CursorHasItem) ~= "function" or CursorHasItem() then return end
+    if type(InCombatLockdown) == "function" and InCombatLockdown() then return end
+    local now = GetTime()
+    if tradeState.autoWait and now < tradeState.autoWait then return end
+    if tradeState.autoVerify then
+        local verification = tradeState.autoVerify
+        tradeState.autoVerify = nil
+        if ItemIdentity(GetTradePlayerItemLink(verification.slot)) ~= verification.itemID then
+            verification.mark.tradePending = nil
+        end
+    end
+    local tradeSlot = FindEmptyTradeSlot()
+    if not tradeSlot then return end
+    CaptureTradeOffer()
+    local needed = {}
+    for _, mark in ipairs(bagMarks) do
+        if ShortName(mark.winner) == ShortName(tradeState.partner) then
+            needed[mark.itemID] = (needed[mark.itemID] or 0) + 1
+        end
+    end
+    for itemID, offered in pairs(tradeState.offered or {}) do
+        needed[itemID] = math.max(0, (needed[itemID] or 0) - offered)
+    end
+    for _, mark in ipairs(bagMarks) do
+        if (needed[mark.itemID] or 0) > 0
+            and not mark.tradePending and not tradeState.autoAttempted[mark]
+            and ShortName(mark.winner) == ShortName(tradeState.partner)
+            and mark.bag ~= nil and mark.slot ~= nil
+            and ItemIdentity(GetContainerItemLink(mark.bag, mark.slot)) == mark.itemID then
+            local _, count, locked = GetContainerItemInfo(mark.bag, mark.slot)
+            if not locked and (not count or count == 1) then
+                tradeState.autoAttempted[mark] = true
+                local ok = pcall(PickupContainerItem, mark.bag, mark.slot)
+                if ok and CursorHasItem() then
+                    local moved = pcall(ClickTradeButton, tradeSlot)
+                    if moved and not CursorHasItem() then
+                        mark.tradePending = true
+                        tradeState.autoMarks[mark] = true
+                        tradeState.autoVerify = {mark = mark, itemID = mark.itemID, slot = tradeSlot}
+                        tradeState.autoWait = now + 0.5
+                        CaptureTradeOffer()
+                        return
+                    end
+                    if CursorHasItem() then
+                        if type(ClearCursor) == "function" then ClearCursor() end
+                    end
+                end
+                tradeState.autoWait = now + 0.5
+                return
+            end
+        end
+    end
+end
+
 local function CountBagItemCopies()
     local counts = {}
     for bag = 0, (NUM_BAG_SLOTS or 4) do
@@ -634,7 +719,10 @@ end
 
 local function BeginMarkedTrade()
     RefreshWonBagItems()
-    tradeState = { partner = TradePartnerName(), offered = {}, started = GetTime(), before = CountBagItemCopies() }
+    tradeState = {
+        partner = TradePartnerName(), offered = {}, started = GetTime(),
+        before = CountBagItemCopies(), autoAttempted = {}, autoMarks = {}, autoWait = GetTime() + 0.3
+    }
     recentTrade = nil
     CaptureTradeOffer()
     RefreshBagVisuals()
@@ -649,6 +737,7 @@ end
 
 local function EndMarkedTrade()
     if not tradeState then return end
+    ClearAutoTradePending(tradeState)
     if not next(tradeState.offered or {}) and tradeState.acceptedOffer then
         tradeState.offered = tradeState.acceptedOffer
     end
@@ -2794,6 +2883,15 @@ frame:SetScript("OnUpdate", function(self, elapsed)
     end
     if recentTrade and (GetTime() - recentTrade.closedAt) > 5 then
         recentTrade = nil
+    end
+    if tradeState then
+        self.autoTradeElapsed = (self.autoTradeElapsed or 0) + elapsed
+        if self.autoTradeElapsed >= 0.15 then
+            self.autoTradeElapsed = 0
+            AutoFillMarkedTrade()
+        end
+    else
+        self.autoTradeElapsed = 0
     end
     if not bagTrackingReady or not bagMarks or #bagMarks == 0 then return end
     self.bagMarkElapsed = (self.bagMarkElapsed or 0) + elapsed
