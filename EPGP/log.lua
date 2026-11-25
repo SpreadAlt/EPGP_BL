@@ -581,16 +581,17 @@ function mod:FinalizeSync()
     self:FlushLogChanges()
 end
 
-function mod:RequestLogSync(days)
-    if not IsInGuild() then return end
+function mod:RequestLogSync(days, force)
+    if not IsInGuild() then return false end
     local now = GetTime()
-    if lastSyncRequest and now - lastSyncRequest < 60 then return end
+    if not force and lastSyncRequest and now - lastSyncRequest < 60 then return false end
     lastSyncRequest = now
     if days == nil or days >= 90 then
         lastFullRequest = now
     end
     local window = (type(days) == "number" and days > 0 and days or 90) * 24 * 60 * 60
-    self:SendCommMessage("EPGP_SYNC_REQUEST", tostring(math.floor(time() - window)), "GUILD", nil, "BULK")
+    self:SendCommMessage("EPGPSYNCREQ", tostring(math.floor(time() - window)), "GUILD", nil, "BULK")
+    return true
 end
 
 function mod:PeriodicLogSync()
@@ -677,7 +678,7 @@ function mod:OnEnable()
     EPGP.RegisterCallback(mod, "GPAward", AppendToLog, "GP")
     EPGP.RegisterCallback(mod, "BankedItem", AppendToLog, "BI")
     mod:RegisterComm("EPGP", "LogSync")
-    mod:RegisterComm("EPGP_SYNC_REQUEST", "EPGP_SYNC_REQUEST")
+    mod:RegisterComm("EPGPSYNCREQ", "EPGP_SYNC_REQUEST")
     mod:RegisterComm("EPGP_SYNC_LOG", "EPGP_SYNC_LOG")
 
     -- Upgrade the logs from older dbs

@@ -124,6 +124,13 @@ function EPGP:ProcessCommand(str)
   local command, nextpos = self:GetArgs(str, 1)
   if command == "config" then
     InterfaceOptionsFrame_OpenToCategory("EPGP")
+  elseif command == "sync" then
+    local journal = self:GetModule("log", true)
+    if journal and journal:RequestLogSync(90, true) then
+      self:Print("Запрошена синхронизация журнала за 90 дней.")
+    else
+      self:Print("Не удалось запросить журнал: нет гильдии или модуль журнала отключён.")
+    end
   elseif command == "debug" then
     Debug:Toggle()
   elseif command == "massep" then

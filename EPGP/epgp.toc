@@ -1,9 +1,9 @@
 ## Interface: 30300
 ## LoadOnDemand: 1
 ## Title: EPGP
-## Notes: |@Version: 1@|Effort Points/Gear Points Loot System
+## Notes: Effort Points/Gear Points Loot System
 ## Author: Alkis Evlogimenos, for sirus fxpw, fallafell, buster
-## Version: 6.0.19
+## Version: 6.1.0
 ## OptionalDeps: DBM-Core BigWigs_Core
 ## SavedVariables: EPGP_DB
 ## X-Category: Guild
